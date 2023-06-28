@@ -14,9 +14,16 @@ impl Control for IControl {
         _: Request<VersionRequest>,
     ) -> Result<Response<VersionReply>, Status> {
         let reply = VersionReply {
-            major_version: env!("CARGO_PKG_VERSION_MAJOR").to_string(),
-            minor_version: env!("CARGO_PKG_VERSION_MINOR").to_string(),
-            patch_version: env!("CARGO_PKG_VERSION_PATCH").to_string(),
+            major_version: env!("CARGO_PKG_VERSION_MAJOR")
+                .parse::<u64>()
+                .unwrap(),
+            minor_version: env!("CARGO_PKG_VERSION_MINOR")
+                .parse::<u64>()
+                .unwrap(),
+            patch_version: env!("CARGO_PKG_VERSION_PATCH")
+                .parse::<u64>()
+                .unwrap(),
+            pre_version: env!("CARGO_PKG_VERSION_PRE").to_string(),
         };
 
         Ok(Response::new(reply))
