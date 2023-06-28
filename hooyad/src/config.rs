@@ -4,7 +4,7 @@ use dotenv::dotenv;
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 pub struct Config {
-    #[arg(short, long, env("HOOYAD_ENDPOINT"), default_value = "[::1]:50051")]
+    #[arg(short, long, env("HOOYAD_ENDPOINT"), default_value = "[::1]:8531")]
     pub endpoint: String,
 }
 
