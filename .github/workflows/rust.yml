@@ -1,0 +1,23 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: [ "trunk" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: self-hosted
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Clippy
+      run: cargo clippy
+    - name: Format
+      run: cargo fmt
+    - name: Build
+      run: cargo build
+
