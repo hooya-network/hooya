@@ -1,8 +1,12 @@
 use hooya::proto::{control_client::ControlClient, VersionRequest};
+mod config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = ControlClient::connect("http://[::1]:50051").await?;
+    let cfg = config::Config::from_env_and_args();
+
+    let mut client =
+        ControlClient::connect(format!("http://{}", cfg.endpoint)).await?;
     let request = tonic::Request::new(VersionRequest {});
     let response = client.version(request).await?.into_inner();
 

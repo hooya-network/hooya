@@ -4,6 +4,8 @@ use hooya::proto::{
 };
 use tonic::{transport::Server, Request, Response, Status};
 
+mod config;
+
 #[derive(Debug, Default)]
 pub struct IControl {}
 
@@ -32,11 +34,12 @@ impl Control for IControl {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse()?;
+    let cfg = config::Config::from_env_and_args();
+    let endpoint = cfg.endpoint.parse()?;
 
     Server::builder()
         .add_service(ControlServer::new(IControl::default()))
-        .serve(addr)
+        .serve(endpoint)
         .await?;
     Ok(())
 }
