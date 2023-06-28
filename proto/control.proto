@@ -3,6 +3,9 @@ package hooya;
 
 service Control {
     rpc Version (VersionRequest) returns (VersionReply);
+    rpc StreamToFilestore (stream StreamToFilestoreRequest) returns (StreamToFilestoreReply);
+    rpc IndexFile (IndexFileRequest) returns (IndexFileReply);
+    rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
 }
 
 message VersionRequest { }
@@ -13,3 +16,26 @@ message VersionReply {
     uint64 patch_version = 3;
     string pre_version = 4;
 }
+
+message AddFileRequest {
+}
+
+message StreamToFilestoreRequest {
+    bytes file = 1;
+}
+
+message StreamToFilestoreReply {
+    bytes cid = 1;
+}
+
+message IndexFileRequest {
+    bytes cid = 1;
+}
+
+message IndexFileReply { }
+
+message ForgetFileRequest {
+    bytes cid = 1;
+}
+
+message ForgetFileReply { }

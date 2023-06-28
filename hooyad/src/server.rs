@@ -1,6 +1,14 @@
+use clap::{command, value_parser, Arg};
+use dotenv::dotenv;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    VersionReply, VersionRequest,
+    ForgetFileReply, ForgetFileRequest, IndexFileReply, IndexFileRequest,
+    StreamToFilestoreReply, StreamToFilestoreRequest, VersionReply,
+    VersionRequest,
+};
+use std::{
+    fs::create_dir_all,
+    path::{Path, PathBuf},
 };
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -30,16 +38,71 @@ impl Control for IControl {
 
         Ok(Response::new(reply))
     }
+
+    async fn stream_to_filestore(
+        &self,
+        _: Request<tonic::Streaming<StreamToFilestoreRequest>>,
+    ) -> Result<Response<StreamToFilestoreReply>, Status> {
+        let reply = StreamToFilestoreReply { cid: vec![] };
+
+        Ok(Response::new(reply))
+    }
+
+    async fn index_file(
+        &self,
+        _: Request<IndexFileRequest>,
+    ) -> Result<Response<IndexFileReply>, Status> {
+        let reply = IndexFileReply {};
+
+        Ok(Response::new(reply))
+    }
+
+    async fn forget_file(
+        &self,
+        _: Request<ForgetFileRequest>,
+    ) -> Result<Response<ForgetFileReply>, Status> {
+        let reply = ForgetFileReply {};
+
+        Ok(Response::new(reply))
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = config::Config::from_env_and_args();
-    let endpoint = cfg.endpoint.parse()?;
+    dotenv().ok();
+    let xdg_pictures_dir = Path::new(env!("XDG_PICTURES_DIR"));
+    let mut default_filestore_path = Path::new(".hooya").to_path_buf();
+    if xdg_pictures_dir.is_dir() {
+        default_filestore_path = xdg_pictures_dir.join("hooya");
+    }
+
+    let matches = command!()
+        .arg(
+            Arg::new("endpoint")
+                .long("endpoint")
+                .env("HOOYAD_ENDPOINT")
+                .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
+        )
+        .arg(
+            Arg::new("filestore")
+                .long("filestore")
+                .env("HOOYAD_FILESTORE")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .get_matches();
+
+    let filestore_path = matches
+        .get_one::<PathBuf>("filestore")
+        .unwrap_or(&default_filestore_path);
+
+    // Create filestore structure
+    create_dir_all(filestore_path.join("store"))?;
+    create_dir_all(filestore_path.join("forgotten"))?;
+    create_dir_all(filestore_path.join("thumbs"))?;
 
     Server::builder()
         .add_service(ControlServer::new(IControl::default()))
-        .serve(endpoint)
+        .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
     Ok(())
 }
