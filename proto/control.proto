@@ -1,0 +1,14 @@
+syntax = "proto3";
+package hooya;
+
+service Control {
+    rpc Version (VersionRequest) returns (VersionReply);
+}
+
+message VersionRequest { }
+
+message VersionReply {
+    string major_version = 1;
+    string minor_version = 2;
+    string patch_version = 3;
+}
