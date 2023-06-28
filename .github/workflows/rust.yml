@@ -14,10 +14,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - name: Build
+      run: cargo build
     - name: Clippy
       run: cargo clippy
     - name: Format
       run: cargo fmt
-    - name: Build
-      run: cargo build
 
