@@ -2,20 +2,25 @@ use clap::{command, value_parser, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    ForgetFileReply, ForgetFileRequest, IndexFileReply, IndexFileRequest,
-    StreamToFilestoreReply, StreamToFilestoreRequest, VersionReply,
-    VersionRequest,
+    FileChunk, ForgetFileReply, ForgetFileRequest, IndexFileReply,
+    IndexFileRequest, StreamToFilestoreReply, VersionReply, VersionRequest,
 };
+use rand::distributions::DistString;
+use ring::digest::{Context, SHA256};
 use std::{
-    fs::create_dir_all,
+    fs::{create_dir_all, File},
+    io::Write,
     path::{Path, PathBuf},
 };
+use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 
 mod config;
 
 #[derive(Debug, Default)]
-pub struct IControl {}
+pub struct IControl {
+    filestore_path: PathBuf,
+}
 
 #[tonic::async_trait]
 impl Control for IControl {
@@ -41,10 +46,36 @@ impl Control for IControl {
 
     async fn stream_to_filestore(
         &self,
-        _: Request<tonic::Streaming<StreamToFilestoreRequest>>,
+        r: Request<tonic::Streaming<FileChunk>>,
     ) -> Result<Response<StreamToFilestoreReply>, Status> {
-        let reply = StreamToFilestoreReply { cid: vec![] };
+        let mut chunk_stream = r.into_inner();
+        let mut sha_context = Context::new(&SHA256);
 
+        let tmp_name = rand::distributions::Alphanumeric
+            .sample_string(&mut rand::thread_rng(), 16);
+        let tmp_path = self.filestore_path.join("tmp").join(tmp_name);
+        let mut fh = File::create(tmp_path.clone())?;
+
+        while let Some(res) = chunk_stream.next().await {
+            let data = &res?.data;
+            // Feed chunk to SHA2-256 algorithm
+            sha_context.update(data);
+            // Append to on-disk file
+            fh.write_all(data)?;
+        }
+
+        let cid = hooya::cid::wrap_digest(sha_context.finish())
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let encoded_cid = hooya::cid::encode(&cid);
+
+        let final_dir =
+            self.filestore_path.join("store").join(&encoded_cid[..6]);
+        let final_path = final_dir.join(encoded_cid);
+        if !final_dir.is_dir() {
+            std::fs::create_dir(final_dir)?;
+        }
+        std::fs::rename(tmp_path, final_path)?;
+        let reply = StreamToFilestoreReply { cid };
         Ok(Response::new(reply))
     }
 
@@ -103,9 +134,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     create_dir_all(filestore_path.join("store"))?;
     create_dir_all(filestore_path.join("forgotten"))?;
     create_dir_all(filestore_path.join("thumbs"))?;
+    create_dir_all(filestore_path.join("tmp"))?;
 
     Server::builder()
-        .add_service(ControlServer::new(IControl::default()))
+        .add_service(ControlServer::new(IControl {
+            filestore_path: filestore_path.to_path_buf(),
+        }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
     Ok(())

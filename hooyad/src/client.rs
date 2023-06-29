@@ -1,6 +1,7 @@
 use clap::{command, Arg, ArgAction, Command};
 use dotenv::dotenv;
-use hooya::proto::{control_client::ControlClient, VersionRequest};
+use hooya::proto::{control_client::ControlClient, FileChunk};
+use std::{fs::File, path::Path};
 mod config;
 
 #[tokio::main]
@@ -24,17 +25,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         matches.get_one::<String>("endpoint").unwrap()
     ))
     .await?;
-    let request = tonic::Request::new(VersionRequest {});
-    let response = client.version(request).await?.into_inner();
-
-    let ver = semver::Version {
-        major: response.major_version,
-        minor: response.minor_version,
-        patch: response.patch_version,
-        pre: semver::Prerelease::new(&response.pre_version).unwrap(),
-        build: semver::BuildMetadata::EMPTY,
-    };
-    println!("Connected to remote hooyad instance {}", ver);
 
     match matches.subcommand() {
         Some(("add", sub_matches)) => {
@@ -43,7 +33,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default()
                 .map(|v| v.as_str())
                 .collect::<Vec<_>>();
-            println!("{:?}", files);
+            for f in &files {
+                let fh = File::open(f)?;
+                let chunks = hooya::ChunkedReader::new(fh)
+                    .map(|c| FileChunk { data: c.unwrap() });
+                let resp = client
+                    .stream_to_filestore(futures_util::stream::iter(chunks))
+                    .await?;
+                let cid = resp.into_inner().cid;
+                println!(
+                    "added {} {}",
+                    hooya::cid::encode(cid),
+                    Path::new(f).file_name().unwrap().to_str().unwrap()
+                );
+            }
         }
         _ => unreachable!("Exhausted list of subcommands"),
     }
