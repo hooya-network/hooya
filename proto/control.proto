@@ -17,9 +17,6 @@ message VersionReply {
     string pre_version = 4;
 }
 
-message AddFileRequest {
-}
-
 message FileChunk {
     bytes data = 1;
 }
