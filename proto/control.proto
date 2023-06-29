@@ -3,7 +3,7 @@ package hooya;
 
 service Control {
     rpc Version (VersionRequest) returns (VersionReply);
-    rpc StreamToFilestore (stream StreamToFilestoreRequest) returns (StreamToFilestoreReply);
+    rpc StreamToFilestore (stream FileChunk) returns (StreamToFilestoreReply);
     rpc IndexFile (IndexFileRequest) returns (IndexFileReply);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
 }
@@ -20,8 +20,8 @@ message VersionReply {
 message AddFileRequest {
 }
 
-message StreamToFilestoreRequest {
-    bytes file = 1;
+message FileChunk {
+    bytes data = 1;
 }
 
 message StreamToFilestoreReply {
