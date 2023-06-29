@@ -1,5 +1,5 @@
 use cid::{multibase::Base, multihash::Multihash, Cid};
-use ring::digest::Digest;
+use ring::digest::{Digest, Context, SHA256};
 
 // SHA2_256
 pub const CURR_MULTIHASH_FORMAT: u64 = 0x12;
@@ -16,4 +16,9 @@ where
     T: AsRef<[u8]>,
 {
     cid::multibase::encode(CURR_MULTIBASE_FORMAT, t)
+}
+
+
+pub fn new_digest_context() -> Context {
+    Context::new(&SHA256)
 }

@@ -4,7 +4,6 @@ package hooya;
 service Control {
     rpc Version (VersionRequest) returns (VersionReply);
     rpc StreamToFilestore (stream FileChunk) returns (StreamToFilestoreReply);
-    rpc IndexFile (IndexFileRequest) returns (IndexFileReply);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
 }
 
@@ -24,12 +23,6 @@ message FileChunk {
 message StreamToFilestoreReply {
     bytes cid = 1;
 }
-
-message IndexFileRequest {
-    bytes cid = 1;
-}
-
-message IndexFileReply { }
 
 message ForgetFileRequest {
     bytes cid = 1;

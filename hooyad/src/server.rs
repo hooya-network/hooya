@@ -2,11 +2,10 @@ use clap::{command, value_parser, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    FileChunk, ForgetFileReply, ForgetFileRequest, IndexFileReply,
-    IndexFileRequest, StreamToFilestoreReply, VersionReply, VersionRequest,
+    FileChunk, ForgetFileReply, ForgetFileRequest,
+    StreamToFilestoreReply, VersionReply, VersionRequest,
 };
 use rand::distributions::DistString;
-use ring::digest::{Context, SHA256};
 use std::{
     fs::{create_dir_all, File},
     io::Write,
@@ -49,7 +48,7 @@ impl Control for IControl {
         r: Request<tonic::Streaming<FileChunk>>,
     ) -> Result<Response<StreamToFilestoreReply>, Status> {
         let mut chunk_stream = r.into_inner();
-        let mut sha_context = Context::new(&SHA256);
+        let mut sha_context = hooya::cid::new_digest_context();
 
         let tmp_name = rand::distributions::Alphanumeric
             .sample_string(&mut rand::thread_rng(), 16);
@@ -71,20 +70,12 @@ impl Control for IControl {
         let final_dir =
             self.filestore_path.join("store").join(&encoded_cid[..6]);
         let final_path = final_dir.join(encoded_cid);
+
         if !final_dir.is_dir() {
             std::fs::create_dir(final_dir)?;
         }
         std::fs::rename(tmp_path, final_path)?;
         let reply = StreamToFilestoreReply { cid };
-        Ok(Response::new(reply))
-    }
-
-    async fn index_file(
-        &self,
-        _: Request<IndexFileRequest>,
-    ) -> Result<Response<IndexFileReply>, Status> {
-        let reply = IndexFileReply {};
-
         Ok(Response::new(reply))
     }
 
