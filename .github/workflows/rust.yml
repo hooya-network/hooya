@@ -1,0 +1,30 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: [ "trunk" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: self-hosted
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: ⚡ Cache
+      uses: actions/cache@v2
+      with:
+        path: |
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build
+      run: cargo build
+    - name: Clippy
+      run: cargo clippy
+    - name: Format
+      run: cargo fmt --check
+

@@ -70,10 +70,14 @@ impl Control for IControl {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    let xdg_pictures_dir = Path::new(env!("XDG_PICTURES_DIR"));
+
+    // Derive a path to use as filestore
     let mut default_filestore_path = Path::new(".hooya").to_path_buf();
-    if xdg_pictures_dir.is_dir() {
-        default_filestore_path = xdg_pictures_dir.join("hooya");
+    if let Ok(xdg_pictures_dir) = std::env::var("XDG_PICTURES_DIR") {
+        let xdg_pictures_path = Path::new(&xdg_pictures_dir);
+        if xdg_pictures_path.is_dir() {
+            default_filestore_path = xdg_pictures_path.join("hooya");
+        }
     }
 
     let matches = command!()
