@@ -2,11 +2,13 @@ use clap::{command, value_parser, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    FileChunk, ForgetFileReply, ForgetFileRequest, IndexFileReply,
-    IndexFileRequest, StreamToFilestoreReply, VersionReply, VersionRequest,
+    FileChunk, ForgetFileReply, ForgetFileRequest, StreamToFilestoreReply,
+    TagCidReply, TagCidRequest, VersionReply, VersionRequest,
 };
+use hooya::runtime::Runtime;
 use rand::distributions::DistString;
-use ring::digest::{Context, SHA256};
+use sqlx::migrate::MigrateDatabase;
+use sqlx::{Sqlite, SqlitePool};
 use std::{
     fs::{create_dir_all, File},
     io::Write,
@@ -17,9 +19,8 @@ use tonic::{transport::Server, Request, Response, Status};
 
 mod config;
 
-#[derive(Debug, Default)]
-pub struct IControl {
-    filestore_path: PathBuf,
+struct IControl {
+    pub runtime: Runtime,
 }
 
 #[tonic::async_trait]
@@ -48,12 +49,13 @@ impl Control for IControl {
         &self,
         r: Request<tonic::Streaming<FileChunk>>,
     ) -> Result<Response<StreamToFilestoreReply>, Status> {
+        let runtime = &self.runtime;
         let mut chunk_stream = r.into_inner();
-        let mut sha_context = Context::new(&SHA256);
+        let mut sha_context = hooya::cid::new_digest_context();
 
         let tmp_name = rand::distributions::Alphanumeric
             .sample_string(&mut rand::thread_rng(), 16);
-        let tmp_path = self.filestore_path.join("tmp").join(tmp_name);
+        let tmp_path = runtime.filestore_path.join("tmp").join(tmp_name);
         let mut fh = File::create(tmp_path.clone())?;
 
         while let Some(res) = chunk_stream.next().await {
@@ -66,25 +68,38 @@ impl Control for IControl {
 
         let cid = hooya::cid::wrap_digest(sha_context.finish())
             .map_err(|e| Status::internal(e.to_string()))?;
-        let encoded_cid = hooya::cid::encode(&cid);
+        let cid_store_path = runtime.derive_store_path(&cid);
 
-        let final_dir =
-            self.filestore_path.join("store").join(&encoded_cid[..6]);
-        let final_path = final_dir.join(encoded_cid);
-        if !final_dir.is_dir() {
-            std::fs::create_dir(final_dir)?;
+        // I know this always has a parent so .unwrap() okie
+        let parent = cid_store_path.parent().unwrap();
+
+        if !parent.is_dir() {
+            std::fs::create_dir(parent)?;
         }
-        std::fs::rename(tmp_path, final_path)?;
+        std::fs::rename(tmp_path, cid_store_path)?;
+
+        self.runtime
+            .new_from_filestore(cid.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
         let reply = StreamToFilestoreReply { cid };
         Ok(Response::new(reply))
     }
 
-    async fn index_file(
+    async fn tag_cid(
         &self,
-        _: Request<IndexFileRequest>,
-    ) -> Result<Response<IndexFileReply>, Status> {
-        let reply = IndexFileReply {};
+        r: Request<TagCidRequest>,
+    ) -> Result<Response<TagCidReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
 
+        let reply = TagCidReply {};
+
+        runtime
+            .tag_cid(req.cid, req.tags)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(reply))
     }
 
@@ -111,6 +126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let default_db_uri = format!(
+        "sqlite://{}",
+        default_filestore_path
+            .join("hooya.sqlite")
+            .to_str()
+            .unwrap()
+    );
+
     let matches = command!()
         .arg(
             Arg::new("endpoint")
@@ -124,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .env("HOOYAD_FILESTORE")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
         .get_matches();
 
     let filestore_path = matches
@@ -136,9 +160,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     create_dir_all(filestore_path.join("thumbs"))?;
     create_dir_all(filestore_path.join("tmp"))?;
 
+    let db_uri = matches
+        .get_one::<String>("db-uri")
+        .unwrap_or(&default_db_uri);
+
+    let mut should_init = false;
+    // TODO Match on URI for different DB types
+    if !Sqlite::database_exists(db_uri).await.unwrap_or(false) {
+        Sqlite::create_database(db_uri).await?;
+        should_init = true;
+    }
+
+    let mut db = hooya::local::Db::new(SqlitePool::connect(db_uri).await?);
+
+    if should_init {
+        db.init_tables().await?;
+    }
+
     Server::builder()
         .add_service(ControlServer::new(IControl {
-            filestore_path: filestore_path.to_path_buf(),
+            runtime: Runtime {
+                filestore_path: filestore_path.to_path_buf(),
+                db,
+            },
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
