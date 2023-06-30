@@ -20,8 +20,8 @@ tokio-stream = { version = "0.1" }
 hooya = { path = "../packages/hooya" }
 semver = "1.0"
 clap = { version = "4.3", features = [ "derive", "env", "cargo" ] }
+sqlx = { version = "0.6", features = [ "sqlite", "runtime-tokio-native-tls" ] }
 rand = "0.8"
-ring = "0.16"
 dotenv = "0.15"
 futures-util = "0.3"
 

@@ -22,6 +22,10 @@ in
 with nixpkgs;
 stdenv.mkDerivation {
   name = "hooya";
+  nativeBuildInputs = [
+    openssl
+    pkg-config
+  ];
   buildInputs = [
     rust
     nodejs

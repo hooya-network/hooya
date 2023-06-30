@@ -5,4 +5,7 @@ pub mod proto {
 mod chunked_reader;
 pub use chunked_reader::*;
 
+pub mod local;
+
 pub mod cid;
+pub mod runtime;
