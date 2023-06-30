@@ -1,9 +1,7 @@
 use anyhow::Result;
 use clap::{command, Arg, ArgAction, Command};
 use dotenv::dotenv;
-use hooya::proto::{
-    control_client::ControlClient, FileChunk, Tag, TagCidRequest,
-};
+use hooya::proto::{control_client::ControlClient, FileChunk, TagCidRequest};
 use std::{fs::File, path::Path};
 mod config;
 
@@ -59,31 +57,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(("tag", sub_matches)) => {
             let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
             let (_, cid) = hooya::cid::decode(encoded_cid)?;
-            let tag_result: Result<Vec<_>> = sub_matches
-                .get_many::<String>("tags")
+            let tags = sub_matches
+                .get_many::<hooya::proto::Tag>("tags")
                 .unwrap_or_default()
-                // TODO Better to do w Clap value_parser
-                .map(|v| tag_from_cli(v))
+                .cloned()
                 .collect();
-            client
-                .tag_cid(TagCidRequest {
-                    cid,
-                    tags: tag_result?,
-                })
-                .await?;
+            client.tag_cid(TagCidRequest { cid, tags }).await?;
         }
         _ => unreachable!("Exhausted list of subcommands"),
     }
 
     Ok(())
-}
-
-fn tag_from_cli(s: &str) -> Result<Tag> {
-    let parts = s.split_once(':').ok_or(anyhow::anyhow!(
-        "Tag must be qualified with namespaces (namespace:descriptor)"
-    ))?;
-    Ok(Tag {
-        namespace: parts.0.to_string(),
-        descriptor: parts.1.to_string(),
-    })
 }
