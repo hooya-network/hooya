@@ -1,9 +1,12 @@
 syntax = "proto3";
 package hooya;
 
+import "hooya.proto";
+
 service Control {
     rpc Version (VersionRequest) returns (VersionReply);
     rpc StreamToFilestore (stream FileChunk) returns (StreamToFilestoreReply);
+    rpc TagCid (TagCidRequest) returns (TagCidReply);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
 }
 
@@ -22,6 +25,14 @@ message FileChunk {
 
 message StreamToFilestoreReply {
     bytes cid = 1;
+}
+
+message TagCidRequest {
+    bytes cid = 1;
+    repeated Tag tags = 2;
+}
+
+message TagCidReply {
 }
 
 message ForgetFileRequest {

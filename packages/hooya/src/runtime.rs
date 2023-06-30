@@ -1,4 +1,5 @@
-use crate::local::{self, FileRow};
+use crate::local::{self, FileRow, TagMapRow};
+use crate::proto::Tag;
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
@@ -26,6 +27,40 @@ impl Runtime {
         self.db.new_file(f).await?;
 
         Ok(())
+    }
+
+    pub async fn tag_cid(&self, cid: Vec<u8>, tags: Vec<Tag>) -> Result<()> {
+        let tags_len = tags.len();
+        let mut tag_maps =
+            self.make_tag_map_rows(cid.clone(), tags.clone()).await?;
+
+        // Cheaper than doing it 1-by-1
+        if tag_maps.len() != tags_len {
+            self.db.new_tag_vocab(tags.clone()).await?;
+            tag_maps = self.make_tag_map_rows(cid, tags).await?;
+        }
+
+        self.db.new_tag_map(&tag_maps).await?;
+        Ok(())
+    }
+
+    async fn make_tag_map_rows(
+        &self,
+        cid: Vec<u8>,
+        tags: Vec<Tag>,
+    ) -> Result<Vec<TagMapRow>> {
+        let tag_ids = self.db.lookup_tag_id(tags.clone()).await?;
+
+        let rows = tag_ids
+            .iter()
+            .map(|t| TagMapRow {
+                file_cid: cid.clone(),
+                tag_id: t.id,
+                added: None,
+                reason: 0, // TODO enum w "added by node opeartor" reason as 0
+            })
+            .collect::<Vec<TagMapRow>>();
+        Ok(rows)
     }
 
     pub fn derive_store_path(&self, cid: &[u8]) -> PathBuf {

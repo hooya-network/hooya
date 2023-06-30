@@ -1,0 +1,7 @@
+syntax = "proto3";
+package hooya;
+
+message Tag {
+    string namespace = 1;
+    string descriptor = 2;
+}

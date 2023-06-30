@@ -791,6 +791,7 @@ dependencies = [
 name = "hooyad"
 version = "0.1.0-prealpha"
 dependencies = [
+ "anyhow",
  "clap",
  "dotenv",
  "futures-util",

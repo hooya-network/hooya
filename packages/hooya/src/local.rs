@@ -1,6 +1,15 @@
-use sqlx::{Executor, SqlitePool};
+use anyhow::Result;
+use sqlx::{
+    sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool,
+};
 
-pub struct TagRow {}
+use crate::proto::Tag;
+
+pub struct TagRow {
+    pub id: i32,
+    pub namespace: String,
+    pub descriptor: String,
+}
 
 pub struct FileRow {
     pub cid: Vec<u8>,
@@ -8,7 +17,13 @@ pub struct FileRow {
     pub mimetype: String,
 }
 
-pub struct TagMapRow {}
+#[derive(Debug)]
+pub struct TagMapRow {
+    pub file_cid: Vec<u8>,
+    pub tag_id: i32,
+    pub added: Option<String>,
+    pub reason: u32,
+}
 
 pub struct Db {
     executor: SqlitePool,
@@ -19,7 +34,7 @@ impl Db {
         Self { executor }
     }
 
-    pub async fn init_tables(&mut self) -> sqlx::Result<()> {
+    pub async fn init_tables(&mut self) -> Result<()> {
         self.executor
             .execute(
                 r#"
@@ -46,9 +61,10 @@ impl Db {
             .execute(
                 r#"
             CREATE TABLE IF NOT EXISTS TagMap (
-            FileCid TEXT NOT NULL,
-            TagId TEXT NOT NULL,
-            ADDED DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FileCid VARBINARY NOT NULL,
+            TagId INTEGER NOT NULL,
+            Added DATETIME DEFAULT CURRENT_TIMESTAMP,
+            Reason INTEGER UNSIGNED NOT NULL,
             UNIQUE(FileCid, TagId),
             FOREIGN KEY (FileCid) REFERENCES Files(Cid) ON DELETE CASCADE,
             FOREIGN KEY (TagId) REFERENCES Tags(Id) ON DELETE CASCADE)"#,
@@ -71,5 +87,80 @@ impl Db {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn new_tag_vocab(&self, tags: Vec<Tag>) -> Result<()> {
+        for t in tags {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO Tags (Namespace, Descriptor) VALUES
+                (?, ?)"#,
+            )
+            .bind(t.namespace)
+            .bind(t.descriptor)
+            .execute(&self.executor)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn new_tag_map(&self, tag_maps: &[TagMapRow]) -> Result<()> {
+        for t in tag_maps {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO TagMap (FileCid, TagId, Added, Reason) VALUES
+                (?, ?, ?, ?)"#,
+            )
+            .bind(t.file_cid.clone())
+            .bind(t.tag_id)
+            .bind(t.added.clone())
+            .bind(t.reason)
+            .execute(&self.executor)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn lookup_tag_id(&self, tags: Vec<Tag>) -> Result<Vec<TagRow>> {
+        if tags.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+            r#"SELECT Id, Descriptor, Namespace
+        FROM Tags WHERE (Namespace, Descriptor) IN ("#,
+        );
+        let tags_len = tags.len();
+        for (i, t) in tags.into_iter().enumerate() {
+            if i < tags_len - 1 {
+                builder.push(", ");
+            }
+            builder.push("(");
+            builder.push_bind(t.namespace);
+            builder.push(",");
+            builder.push_bind(t.descriptor);
+            builder.push(")");
+        }
+        builder.push(")");
+        let query = builder.build();
+
+        let tag_rows = query
+            .try_map(|r: SqliteRow| {
+                let descriptor = r.try_get("Descriptor")?;
+                let namespace = r.try_get("Namespace")?;
+                let id = r.try_get("Id")?;
+
+                Ok(TagRow {
+                    id,
+                    descriptor,
+                    namespace,
+                })
+            })
+            .fetch_all(&self.executor)
+            .await?;
+
+        Ok(tag_rows)
     }
 }

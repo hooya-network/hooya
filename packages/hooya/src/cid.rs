@@ -1,3 +1,4 @@
+use anyhow::Result;
 use cid::{multibase::Base, multihash::Multihash, Cid};
 use ring::digest::{Context, Digest, SHA256};
 
@@ -16,6 +17,10 @@ where
     T: AsRef<[u8]>,
 {
     cid::multibase::encode(CURR_MULTIBASE_FORMAT, t)
+}
+
+pub fn decode(s: &str) -> Result<(Base, Vec<u8>)> {
+    cid::multibase::decode(s).map_err(anyhow::Error::new)
 }
 
 pub fn new_digest_context() -> Context {

@@ -3,7 +3,7 @@ use dotenv::dotenv;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     FileChunk, ForgetFileReply, ForgetFileRequest, StreamToFilestoreReply,
-    VersionReply, VersionRequest,
+    TagCidReply, TagCidRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -84,6 +84,22 @@ impl Control for IControl {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let reply = StreamToFilestoreReply { cid };
+        Ok(Response::new(reply))
+    }
+
+    async fn tag_cid(
+        &self,
+        r: Request<TagCidRequest>,
+    ) -> Result<Response<TagCidReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
+
+        let reply = TagCidReply {};
+
+        runtime
+            .tag_cid(req.cid, req.tags)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(reply))
     }
 
