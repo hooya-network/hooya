@@ -16,7 +16,9 @@ impl Runtime {
         let size: i64 =
             fs::metadata(cid_store_path.clone())?.len().try_into()?; // TODO
 
-        let mimetype = tree_magic::from_filepath(&cid_store_path);
+        let mimetype = infer::get_from_path(&cid_store_path)?
+            .ok_or(anyhow::anyhow!("Failed to infer file mimetype"))?
+            .to_string();
 
         let f = FileRow {
             cid,

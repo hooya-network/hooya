@@ -12,10 +12,7 @@ ring = "0.16"
 tokio = { version = "1.0", features = [ "macros", "rt-multi-thread"] }
 sqlx = { version = "0.6", features = [ "runtime-tokio-native-tls" ] }
 anyhow = "1.0"
-# TODO
-# I should parse file content myself. Only handling a few distinct mimetypes and
-# this crate is way old
-tree_magic = "0.2.3"
+infer = "0.14"
 
 [build-dependencies]
 tonic-build = "0.9"

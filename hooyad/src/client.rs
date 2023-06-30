@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, ArgAction, Command};
+use clap::{command, value_parser, Arg, ArgAction, Command};
 use dotenv::dotenv;
 use hooya::proto::{control_client::ControlClient, FileChunk, TagCidRequest};
 use std::{fs::File, path::Path};
@@ -20,9 +20,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Command::new("add").arg(Arg::new("file").action(ArgAction::Append)),
         )
         .subcommand(
-            Command::new("tag")
-                .arg(Arg::new("cid").required(true))
-                .arg(Arg::new("tags").action(ArgAction::Append).required(true)),
+            Command::new("tag").arg(Arg::new("cid").required(true)).arg(
+                Arg::new("tags")
+                    .action(ArgAction::Append)
+                    .required(true)
+                    .value_parser(value_parser!(hooya::proto::Tag)),
+            ),
         )
         .get_matches();
 
