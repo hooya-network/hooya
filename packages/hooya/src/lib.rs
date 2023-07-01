@@ -9,6 +9,7 @@ pub use chunked_reader::*;
 pub mod local;
 
 pub mod cid;
+pub mod client;
 pub mod runtime;
 
 impl From<&str> for proto::Tag {

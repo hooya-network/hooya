@@ -1,5 +1,5 @@
 [workspace]
-members = ["hooyad", "packages/*"]
+members = ["hooyad", "hooya-gtk", "packages/*"]
 
 [profile.release]
 opt-level = 3

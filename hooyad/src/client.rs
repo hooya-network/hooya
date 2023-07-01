@@ -1,13 +1,8 @@
 use anyhow::Result;
 use clap::{command, value_parser, Arg, ArgAction, Command};
 use dotenv::dotenv;
-use futures_util::future::BoxFuture;
-use hooya::proto::{control_client::ControlClient, FileChunk, TagCidRequest};
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
-use tonic::transport::Channel;
+use hooya::proto::{control_client::ControlClient, TagCidRequest};
+use std::path::PathBuf;
 mod config;
 
 #[tokio::main]
@@ -58,7 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default()
                 .collect::<Vec<_>>();
             for f in &files {
-                stream_file_to_remote_filestore(client.clone(), f).await?;
+                hooya::client::stream_file_to_remote_filestore(
+                    client.clone(),
+                    f,
+                )
+                .await?;
             }
         }
         Some(("add-dir", sub_matches)) => {
@@ -67,7 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default()
                 .collect::<Vec<_>>();
             for d in &dirs {
-                stream_dir_to_remote_filestore(client.clone(), d).await?;
+                hooya::client::stream_dir_to_remote_filestore(
+                    client.clone(),
+                    d,
+                )
+                .await?;
             }
         }
         Some(("tag", sub_matches)) => {
@@ -84,43 +87,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-async fn stream_file_to_remote_filestore(
-    mut client: ControlClient<Channel>,
-    local_file: &Path,
-) -> Result<()> {
-    let fh = File::open(local_file)?;
-    let chunks =
-        hooya::ChunkedReader::new(fh).map(|c| FileChunk { data: c.unwrap() });
-    let resp = client
-        .stream_to_filestore(futures_util::stream::iter(chunks))
-        .await
-        .map_err(anyhow::Error::new)?;
-    let cid = resp.into_inner().cid;
-    println!(
-        "added {} {}",
-        hooya::cid::encode(cid),
-        Path::new(local_file).file_name().unwrap().to_str().unwrap()
-    );
-
-    Ok(())
-}
-
-fn stream_dir_to_remote_filestore(
-    client: ControlClient<Channel>,
-    local_dir: &Path,
-) -> BoxFuture<Result<()>> {
-    Box::pin(async move {
-        for entry in std::fs::read_dir(local_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                stream_dir_to_remote_filestore(client.clone(), &path).await?;
-            } else {
-                stream_file_to_remote_filestore(client.clone(), &path).await?;
-            }
-        }
-        Ok(())
-    })
 }
