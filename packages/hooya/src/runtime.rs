@@ -72,7 +72,7 @@ impl Runtime {
 
         // Keep /store kinda uncluttered by dividing data up into dirs
         let final_dir =
-            self.filestore_path.join("store").join(&encoded_cid[..6]);
+            self.filestore_path.join("store").join(&encoded_cid[..12]);
 
         // eg bafkreifh22[...] is stored at bafkre/bafkreifh22[...]
         final_dir.join(encoded_cid)
