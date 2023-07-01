@@ -96,6 +96,11 @@ impl Control for IControl {
 
         let reply = TagCidReply {};
 
+        // Check that the CID is actually indexed before tagging it
+        runtime.indexed_file(req.cid.clone()).await.map_err(|_| {
+            Status::internal("CID is not indexed so it cannot be tagged")
+        })?;
+
         runtime
             .tag_cid(req.cid, req.tags)
             .await

@@ -163,4 +163,25 @@ impl Db {
 
         Ok(tag_rows)
     }
+
+    pub async fn file_row(&self, cid: Vec<u8>) -> Result<FileRow> {
+        let file_row =
+            sqlx::query("SELECT Cid, Mimetype, Size FROM Files WHERE Cid=?")
+                .bind(cid)
+                .try_map(|r: SqliteRow| {
+                    let cid = r.try_get("Cid")?;
+                    let mimetype = r.try_get("Mimetype")?;
+                    let size = r.try_get("Size")?;
+
+                    Ok(FileRow {
+                        cid,
+                        mimetype,
+                        size,
+                    })
+                })
+                .fetch_one(&self.executor)
+                .await?;
+
+        Ok(file_row)
+    }
 }

@@ -1,5 +1,5 @@
 use crate::local::{self, FileRow, TagMapRow};
-use crate::proto::Tag;
+use crate::proto::{File, Tag};
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
@@ -29,6 +29,20 @@ impl Runtime {
         self.db.new_file(f).await?;
 
         Ok(())
+    }
+
+    pub async fn indexed_file(&self, cid: Vec<u8>) -> Result<File> {
+        let file_row = self.db.file_row(cid).await?;
+
+        // The reason for this cute misdirection is that indexed (ie local)
+        // File may not always map 1-to-1 with the concept of Files on the network
+        let file = File {
+            cid: file_row.cid,
+            mimetype: file_row.mimetype,
+            size: file_row.size.try_into()?,
+        };
+
+        Ok(file)
     }
 
     pub async fn tag_cid(&self, cid: Vec<u8>, tags: Vec<Tag>) -> Result<()> {
