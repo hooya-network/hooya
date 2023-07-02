@@ -1102,17 +1102,7 @@ dependencies = [
 name = "hooya-gtk"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
- "futures-util",
  "gtk4",
- "hooya",
- "prost",
- "semver",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]
@@ -1131,7 +1121,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
 ]
 
 [[package]]
