@@ -123,7 +123,7 @@ impl Control for IControl {
         // data and the set of characters in base32 cannot be used for
         // malicious dir traversal
         let local_file = self.runtime.derive_store_path(&cid);
-        let fh = File::open(local_file.clone())?;
+        let fh = File::open(local_file)?;
 
         let output = async_stream::try_stream! {
             let chunks = hooya::ChunkedReader::new(fh);

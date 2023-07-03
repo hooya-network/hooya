@@ -2,17 +2,27 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use gtk::gdk::Display;
 use gtk::{
-    gdk, gio, prelude::*, Align, Button, CssProvider, Image, Label,
-    Orientation, Picture, STYLE_PROVIDER_PRIORITY_APPLICATION,
+    gdk, prelude::*, Align, Button, CssProvider, Image, Label, Orientation,
+    Picture, STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use gtk::{glib, Application, ApplicationWindow};
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::ContentAtCidRequest;
+use hooya::proto::{ContentAtCidRequest, FileChunk};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::thread;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tonic::transport::Channel;
 
 // TODO Share with CLI client
 mod config;
+
+enum UiEvent {}
+
+enum DataEvent {
+    SampleCidDataChunk { chunk: FileChunk },
+    FinishedReceivingSampleCid,
+}
 
 const APP_ID: &str = "org.hooya.hooya_gtk";
 
@@ -28,7 +38,14 @@ fn main() -> glib::ExitCode {
         .get_matches();
 
     let application = Application::builder().application_id(APP_ID).build();
-    application.connect_activate(|app| {
+
+    // thread-to-thread communication
+    let (ui_event_sender, _) = tokio::sync::mpsc::channel(100);
+    let (data_event_sender, data_event_receiver) =
+        tokio::sync::mpsc::channel(100);
+
+    let data_event_receiver = Rc::new(RefCell::new(Some(data_event_receiver)));
+    application.connect_activate(move |app| {
         let provider = CssProvider::new();
         provider.load_from_data(include_str!("style.css"));
         gtk::style_context_add_provider_for_display(
@@ -37,7 +54,11 @@ fn main() -> glib::ExitCode {
             STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        build_browse_window(app)
+        build_browse_window(
+            app,
+            ui_event_sender.clone(),
+            data_event_receiver.clone(),
+        )
     });
 
     thread::spawn(move || {
@@ -51,27 +72,41 @@ fn main() -> glib::ExitCode {
                 .await
                 .expect("Connect to hooyad"); // TODO UI for this
 
-            let sample_cid =
-                "bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py";
+            let sample_cid = hooya::cid::decode(
+                "bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py",
+            )
+            .unwrap()
+            .1;
             let resp = client
                 .content_at_cid(ContentAtCidRequest {
                     // cid: vec![], // TODO fix bug
-                    cid: hooya::cid::decode(sample_cid).unwrap().1,
+                    cid: sample_cid.clone(),
                 })
                 .await
                 .unwrap();
 
             let mut stream = resp.into_inner();
             while let Some(chunk) = stream.message().await.unwrap() {
-                println!("{}", chunk.data.len());
+                data_event_sender
+                    .send(DataEvent::SampleCidDataChunk { chunk })
+                    .await
+                    .expect("Receiving chunk");
             }
+            data_event_sender
+                .send(DataEvent::FinishedReceivingSampleCid)
+                .await
+                .expect("Finalized")
         });
     });
 
     application.run()
 }
 
-fn build_browse_window(app: &Application) {
+fn build_browse_window(
+    app: &Application,
+    _ui_event_sender: Sender<UiEvent>,
+    data_event_receiver: Rc<RefCell<Option<Receiver<DataEvent>>>>,
+) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Browse HooYa!")
@@ -85,15 +120,18 @@ fn build_browse_window(app: &Application) {
         .spacing(0) // Smash all images together
         .valign(Align::Start)
         .build();
-    let file = gio::File::for_path("/home/wesl-ee/img/hooya/store/pf74py/bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py");
-    let asset_paintable = gdk::Texture::from_file(&file).unwrap();
+    let sample_image_pixbuf_loader = gdk::gdk_pixbuf::PixbufLoader::new();
     let sample_image = Picture::builder()
-        .paintable(&asset_paintable)
         .width_request(400)
         .height_request(300)
         .valign(Align::Start)
         .build();
     texture_container.append(&sample_image);
+    sample_image_pixbuf_loader.connect_area_prepared(move |p| {
+        let sample_image_pixbuf = &p.pixbuf().unwrap();
+        sample_image
+            .set_paintable(Some(&gdk::Texture::for_pixbuf(sample_image_pixbuf)))
+    });
 
     let v_box = gtk::Box::builder()
         .orientation(Orientation::Vertical)
@@ -147,6 +185,32 @@ fn build_browse_window(app: &Application) {
     h_box_footer.append(&footer_public_count_button);
     h_box_footer.add_css_class("footer");
     v_box.append(&h_box_footer);
+
+    let future = {
+        let mut data_event_receiver = data_event_receiver
+            .replace(None)
+            .take()
+            .expect("data_event_reciver");
+        async move {
+            while let Some(event) = data_event_receiver.recv().await {
+                match event {
+                    DataEvent::SampleCidDataChunk { chunk, .. } => {
+                        println!(
+                            "UI sees data chunk of size {}",
+                            chunk.data.len()
+                        );
+                        sample_image_pixbuf_loader.write(&chunk.data).unwrap();
+                    }
+                    DataEvent::FinishedReceivingSampleCid => {
+                        sample_image_pixbuf_loader.close().unwrap();
+                    }
+                }
+            }
+        }
+    };
+
+    let c = glib::MainContext::default();
+    c.spawn_local(future);
 
     window.present();
 }
