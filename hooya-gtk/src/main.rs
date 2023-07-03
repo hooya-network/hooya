@@ -7,6 +7,7 @@ use gtk::{
 };
 use gtk::{glib, Application, ApplicationWindow};
 use hooya::proto::control_client::ControlClient;
+use hooya::proto::ContentAtCidRequest;
 use std::thread;
 use tonic::transport::Channel;
 
@@ -42,13 +43,28 @@ fn main() -> glib::ExitCode {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Tokio runtime");
         rt.block_on(async {
-            let _client: ControlClient<Channel> =
+            let mut client: ControlClient<Channel> =
                 ControlClient::connect(format!(
                     "http://{}",
                     matches.get_one::<String>("endpoint").unwrap()
                 ))
                 .await
                 .expect("Connect to hooyad"); // TODO UI for this
+
+            let sample_cid =
+                "bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py";
+            let resp = client
+                .content_at_cid(ContentAtCidRequest {
+                    // cid: vec![], // TODO fix bug
+                    cid: hooya::cid::decode(sample_cid).unwrap().1,
+                })
+                .await
+                .unwrap();
+
+            let mut stream = resp.into_inner();
+            while let Some(chunk) = stream.message().await.unwrap() {
+                println!("{}", chunk.data.len());
+            }
         });
     });
 

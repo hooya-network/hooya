@@ -6,7 +6,6 @@ use tonic::transport::Channel;
 
 use crate::proto::{control_client::ControlClient, FileChunk};
 
-// TODO share this code with `hooya` CLI client
 pub async fn stream_file_to_remote_filestore(
     mut client: ControlClient<Channel>,
     local_file: &Path,

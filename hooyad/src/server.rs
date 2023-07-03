@@ -1,9 +1,11 @@
 use clap::{command, value_parser, Arg};
 use dotenv::dotenv;
+use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    FileChunk, ForgetFileReply, ForgetFileRequest, StreamToFilestoreReply,
-    TagCidReply, TagCidRequest, VersionReply, VersionRequest,
+    ContentAtCidRequest, FileChunk, ForgetFileReply, ForgetFileRequest,
+    StreamToFilestoreReply, TagCidReply, TagCidRequest, VersionReply,
+    VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -13,6 +15,7 @@ use std::{
     fs::{create_dir_all, File},
     io::Write,
     path::{Path, PathBuf},
+    pin::Pin,
 };
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
@@ -106,6 +109,32 @@ impl Control for IControl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(reply))
+    }
+
+    type ContentAtCidStream =
+        Pin<Box<dyn Stream<Item = Result<FileChunk, Status>> + Send + 'static>>;
+    async fn content_at_cid(
+        &self,
+        r: Request<ContentAtCidRequest>,
+    ) -> Result<Response<Self::ContentAtCidStream>, Status> {
+        let cid = r.into_inner().cid;
+
+        // NOTE this is safe because we are in charge of encoding the binary
+        // data and the set of characters in base32 cannot be used for
+        // malicious dir traversal
+        let local_file = self.runtime.derive_store_path(&cid);
+        let fh = File::open(local_file.clone())?;
+
+        let output = async_stream::try_stream! {
+            let chunks = hooya::ChunkedReader::new(fh);
+            for c in chunks {
+                yield FileChunk {
+                    data: c?,
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(output) as Self::ContentAtCidStream))
     }
 
     async fn forget_file(
