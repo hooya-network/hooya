@@ -1,5 +1,8 @@
 use gtk::gdk::Display;
-use gtk::{prelude::*, Orientation, gio, gdk, Align, Label, Button, Picture, CssProvider, STYLE_PROVIDER_PRIORITY_APPLICATION, Image};
+use gtk::{
+    gdk, gio, prelude::*, Align, Button, CssProvider, Image, Label,
+    Orientation, Picture, STYLE_PROVIDER_PRIORITY_APPLICATION,
+};
 use gtk::{glib, Application, ApplicationWindow};
 
 const APP_ID: &str = "org.hooya.hooya_gtk";
@@ -15,7 +18,7 @@ fn main() -> glib::ExitCode {
             STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        build_browse_window(&app)
+        build_browse_window(app)
     });
     application.run()
 }
@@ -59,9 +62,8 @@ fn build_browse_window(app: &Application) {
         .build();
     v_box.append(&h_box_head);
 
-    let h_box_search_button = Button::builder()
-        .icon_name("system-search")
-        .build();
+    let h_box_search_button =
+        Button::builder().icon_name("system-search").build();
     let h_box_text = Label::builder()
         .label("Browsing — All Files")
         .halign(Align::Start)
@@ -72,14 +74,14 @@ fn build_browse_window(app: &Application) {
     // let test_button = gtk::Button::builder()
     //     .label("Rip and tear!")
     //     .build();
-    let h_box_browse = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .build();
+    let h_box_browse = gtk::ScrolledWindow::builder().vexpand(true).build();
     h_box_browse.set_child(Some(&texture_container));
     v_box.append(&h_box_browse);
 
-    let footer_peer_download_from_count_button = build_footer_peer_download_from_element();
-    let footer_peer_upload_to_count_button = build_footer_peer_upload_to_element();
+    let footer_peer_download_from_count_button =
+        build_footer_peer_download_from_element();
+    let footer_peer_upload_to_count_button =
+        build_footer_peer_upload_to_element();
     let footer_favorites_count_button = build_footer_favorites_element();
     let footer_public_count_button = build_footer_public_element();
 
@@ -106,14 +108,13 @@ fn build_footer_peer_upload_to_element() -> gtk::Box {
     let footer_peer_count_button = gtk::Box::builder()
         .spacing(3)
         .has_tooltip(true)
-        .tooltip_text("Peers who made requests of local node within last 15 minutes")
+        .tooltip_text(
+            "Peers who made requests of local node within last 15 minutes",
+        )
         .build();
-    let footer_peer_count_txt = Label::builder()
-        .label("50")
-        .build();
-    let footer_peer_count_icon = Image::builder()
-        .icon_name("network-transmit")
-        .build();
+    let footer_peer_count_txt = Label::builder().label("50").build();
+    let footer_peer_count_icon =
+        Image::builder().icon_name("network-transmit").build();
     footer_peer_count_button.append(&footer_peer_count_icon);
     footer_peer_count_button.append(&footer_peer_count_txt);
 
@@ -125,14 +126,13 @@ fn build_footer_peer_download_from_element() -> gtk::Box {
     let footer_peer_count_button = gtk::Box::builder()
         .spacing(3)
         .has_tooltip(true)
-        .tooltip_text("Peers who answered local node requests within last 15 minutes")
+        .tooltip_text(
+            "Peers who answered local node requests within last 15 minutes",
+        )
         .build();
-    let footer_peer_count_txt = Label::builder()
-        .label("100")
-        .build();
-    let footer_peer_count_icon = Image::builder()
-        .icon_name("network-receive")
-        .build();
+    let footer_peer_count_txt = Label::builder().label("100").build();
+    let footer_peer_count_icon =
+        Image::builder().icon_name("network-receive").build();
     footer_peer_count_button.append(&footer_peer_count_icon);
     footer_peer_count_button.append(&footer_peer_count_txt);
 
@@ -146,12 +146,9 @@ fn build_footer_favorites_element() -> gtk::Box {
         .has_tooltip(true)
         .tooltip_text("Favorites")
         .build();
-    let footer_favorites_count_txt = Label::builder()
-        .label("12,154")
-        .build();
-    let footer_favorites_count_icon = Image::builder()
-        .icon_name("starred")
-        .build();
+    let footer_favorites_count_txt = Label::builder().label("12,154").build();
+    let footer_favorites_count_icon =
+        Image::builder().icon_name("starred").build();
     footer_favorites_count_button.append(&footer_favorites_count_icon);
     footer_favorites_count_button.append(&footer_favorites_count_txt);
 
@@ -165,12 +162,9 @@ fn build_footer_public_element() -> gtk::Box {
         .has_tooltip(true)
         .tooltip_text("Local files made public to HooYa! network peers")
         .build();
-    let footer_public_count_txt = Label::builder()
-        .label("12,154")
-        .build();
-    let footer_public_count_icon = Image::builder()
-        .icon_name("security-high")
-        .build();
+    let footer_public_count_txt = Label::builder().label("12,154").build();
+    let footer_public_count_icon =
+        Image::builder().icon_name("security-high").build();
     footer_public_count_button.append(&footer_public_count_icon);
     footer_public_count_button.append(&footer_public_count_txt);
 
