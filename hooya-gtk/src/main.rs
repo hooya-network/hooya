@@ -1,13 +1,31 @@
+use clap::{command, Arg};
+use dotenv::dotenv;
 use gtk::gdk::Display;
 use gtk::{
     gdk, gio, prelude::*, Align, Button, CssProvider, Image, Label,
     Orientation, Picture, STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use gtk::{glib, Application, ApplicationWindow};
+use hooya::proto::control_client::ControlClient;
+use std::thread;
+use tonic::transport::Channel;
+
+// TODO Share with CLI client
+mod config;
 
 const APP_ID: &str = "org.hooya.hooya_gtk";
 
 fn main() -> glib::ExitCode {
+    dotenv().ok();
+    let matches = command!()
+        .arg(
+            Arg::new("endpoint")
+                .long("endpoint")
+                .env("HOOYAD_ENDPOINT")
+                .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
+        )
+        .get_matches();
+
     let application = Application::builder().application_id(APP_ID).build();
     application.connect_activate(|app| {
         let provider = CssProvider::new();
@@ -20,6 +38,20 @@ fn main() -> glib::ExitCode {
 
         build_browse_window(app)
     });
+
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Tokio runtime");
+        rt.block_on(async {
+            let _client: ControlClient<Channel> =
+                ControlClient::connect(format!(
+                    "http://{}",
+                    matches.get_one::<String>("endpoint").unwrap()
+                ))
+                .await
+                .expect("Connect to hooyad"); // TODO UI for this
+        });
+    });
+
     application.run()
 }
 
