@@ -34,7 +34,7 @@ fn build_browse_window(app: &Application) {
         .spacing(0) // Smash all images together
         .valign(Align::Start)
         .build();
-    let file = gio::File::for_path("/home/wesl-ee/img/hooya/store/bafkreidamyl/bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py");
+    let file = gio::File::for_path("/home/wesl-ee/img/hooya/store/pf74py/bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py");
     let asset_paintable = gdk::Texture::from_file(&file).unwrap();
     let sample_image = Picture::builder()
         .paintable(&asset_paintable)
