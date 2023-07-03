@@ -34,6 +34,7 @@ stdenv.mkDerivation {
     wasm-bindgen-cli
     nodePackages.typescript
     binaryen
+    gtk4
   ];
 
   RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";

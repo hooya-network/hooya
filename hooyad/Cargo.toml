@@ -19,12 +19,10 @@ tokio = { version = "1.0", features = [ "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1" }
 hooya = { path = "../packages/hooya" }
 semver = "1.0"
-clap = { version = "4.3", features = [ "derive", "env", "cargo" ] }
+clap = { version = "4.3", features = [ "env", "cargo" ] }
 sqlx = { version = "0.6", features = [ "sqlite", "runtime-tokio-native-tls" ] }
 rand = "0.8"
 dotenv = "0.15"
 anyhow = "1.0"
 futures-util = "0.3"
-
-[build-dependencies]
-tonic-build = "0.9"
+async-stream = "0.3"

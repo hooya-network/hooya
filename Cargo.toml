@@ -1,5 +1,5 @@
 [workspace]
-members = ["hooyad", "packages/*"]
+members = ["hooyad", "hooya-gtk", "packages/*"]
 
 [profile.release]
 opt-level = 3
@@ -11,3 +11,4 @@ codegen-units = 1
 panic = 'abort'
 incremental = false
 overflow-checks = true
+# strip = 'symbols'

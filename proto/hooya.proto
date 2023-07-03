@@ -5,3 +5,15 @@ message Tag {
     string namespace = 1;
     string descriptor = 2;
 }
+
+message File {
+    bytes cid = 1;
+    uint32 size = 2;
+    string mimetype = 3;
+}
+
+message Image {
+}
+
+message Video {
+}
