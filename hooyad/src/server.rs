@@ -71,7 +71,7 @@ impl Control for IControl {
 
         let cid = hooya::cid::wrap_digest(sha_context.finish())
             .map_err(|e| Status::internal(e.to_string()))?;
-        let cid_store_path = runtime.derive_store_path(&cid);
+        let cid_store_path = runtime.derive_store_path(&cid).unwrap();
 
         // I know this always has a parent so .unwrap() okie
         let parent = cid_store_path.parent().unwrap();
@@ -122,7 +122,10 @@ impl Control for IControl {
         // NOTE this is safe because we are in charge of encoding the binary
         // data and the set of characters in base32 cannot be used for
         // malicious dir traversal
-        let local_file = self.runtime.derive_store_path(&cid);
+        let local_file = self
+            .runtime
+            .derive_store_path(&cid)
+            .map_err(|e| Status::internal(e.to_string()))?;
         let fh = File::open(local_file)?;
 
         let output = async_stream::try_stream! {

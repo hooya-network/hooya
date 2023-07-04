@@ -80,7 +80,6 @@ fn main() -> glib::ExitCode {
             .1;
             let resp = client
                 .content_at_cid(ContentAtCidRequest {
-                    // cid: vec![], // TODO fix bug
                     cid: sample_cid.clone(),
                 })
                 .await

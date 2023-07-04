@@ -11,7 +11,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub async fn new_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
-        let cid_store_path = self.derive_store_path(&cid);
+        let cid_store_path = self.derive_store_path(&cid)?;
 
         let size: i64 =
             fs::metadata(cid_store_path.clone())?.len().try_into()?; // TODO
@@ -79,18 +79,25 @@ impl Runtime {
         Ok(rows)
     }
 
-    pub fn derive_store_path(&self, cid: &[u8]) -> PathBuf {
+    pub fn derive_store_path(&self, cid: &[u8]) -> Result<PathBuf> {
         // TODO May be more useful to keep the encoded version around instead
         // of (de|en)coding it often?
         let encoded_cid = crate::cid::encode(cid);
 
+        if encoded_cid.is_empty() {
+            return Err(anyhow::anyhow!("Unable to derive path for empty CID"));
+        }
+
+        let prefix = if encoded_cid.len() >= 6 {
+            &encoded_cid[encoded_cid.len() - 6..]
+        } else {
+            &encoded_cid
+        };
+
         // Keep /store kinda uncluttered by dividing data up into dirs
-        let final_dir = self
-            .filestore_path
-            .join("store")
-            .join(&encoded_cid[encoded_cid.len() - 6..]);
+        let final_dir = self.filestore_path.join("store").join(prefix);
 
         // eg bafkreifh22[...]fpydri is stored at ydri/bafkreifh22[...]
-        final_dir.join(encoded_cid)
+        Ok(final_dir.join(encoded_cid))
     }
 }
