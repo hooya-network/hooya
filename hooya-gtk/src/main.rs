@@ -1,11 +1,12 @@
 use clap::{command, Arg};
 use dotenv::dotenv;
-use gtk::gdk::Display;
-use gtk::{
-    gdk, prelude::*, Align, Button, CssProvider, Image, Label, Orientation,
-    Picture, STYLE_PROVIDER_PRIORITY_APPLICATION,
-};
+use gtk::gdk::{Display, Texture};
+use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::{glib, Application, ApplicationWindow};
+use gtk::{
+    prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
+    STYLE_PROVIDER_PRIORITY_APPLICATION,
+};
 use hooya::proto::control_client::ControlClient;
 use hooya::proto::{ContentAtCidRequest, FileChunk};
 use std::cell::RefCell;
@@ -120,18 +121,13 @@ fn build_browse_window(
         .spacing(0) // Smash all images together
         .valign(Align::Start)
         .build();
-    let sample_image_pixbuf_loader = gdk::gdk_pixbuf::PixbufLoader::new();
+    let sample_image_pixbuf_loader = PixbufLoader::new();
     let sample_image = Picture::builder()
         .width_request(400)
         .height_request(300)
         .valign(Align::Start)
         .build();
     texture_container.append(&sample_image);
-    sample_image_pixbuf_loader.connect_area_prepared(move |p| {
-        let sample_image_pixbuf = &p.pixbuf().unwrap();
-        sample_image
-            .set_paintable(Some(&gdk::Texture::for_pixbuf(sample_image_pixbuf)))
-    });
 
     let v_box = gtk::Box::builder()
         .orientation(Orientation::Vertical)
@@ -200,6 +196,12 @@ fn build_browse_window(
                             chunk.data.len()
                         );
                         sample_image_pixbuf_loader.write(&chunk.data).unwrap();
+                        let sample_image_pixbuf =
+                            sample_image_pixbuf_loader.pixbuf().unwrap();
+                        let sample_image_paintable =
+                            Texture::for_pixbuf(sample_image_pixbuf.as_ref());
+                        sample_image
+                            .set_paintable(Some(&sample_image_paintable));
                     }
                     DataEvent::FinishedReceivingSampleCid => {
                         sample_image_pixbuf_loader.close().unwrap();
