@@ -143,7 +143,6 @@ fn build_browse_window(
     // let test_button = gtk::Button::builder()
     //     .label("Rip and tear!")
     //     .build();
-    // let m_grid = mason_grid::MasonGrid::new();
     let m_grid = gtk::Box::builder()
         .layout_manager(&mason_grid_layout::MasonGridLayout::default())
         .build();
@@ -188,12 +187,6 @@ fn build_browse_window(
                             chunk.data.len()
                         );
                         sample_image_pixbuf_loader.write(&chunk.data).unwrap();
-                        // let sample_image_pixbuf =
-                        //     sample_image_pixbuf_loader.pixbuf().unwrap();
-                        // let sample_image_paintable =
-                        //     Texture::for_pixbuf(sample_image_pixbuf.as_ref());
-                        // sample_image
-                        //     .set_paintable(Some(&sample_image_paintable));
                     }
                     DataEvent::FinishedReceivingSampleCid => {
                         sample_image_pixbuf_loader.close().unwrap();
