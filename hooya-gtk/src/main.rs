@@ -2,7 +2,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
-use gtk::{glib, Application, ApplicationWindow};
+use gtk::{glib, Application, ApplicationWindow, ContentFit};
 use gtk::{
     prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
     STYLE_PROVIDER_PRIORITY_APPLICATION,
@@ -17,6 +17,8 @@ use tonic::transport::Channel;
 
 // TODO Share with CLI client
 mod config;
+
+mod mason_grid_layout;
 
 enum UiEvent {}
 
@@ -114,20 +116,6 @@ fn build_browse_window(
         .default_height(800)
         .build();
 
-    let texture_container = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .halign(Align::Start)
-        .spacing(0) // Smash all images together
-        .valign(Align::Start)
-        .build();
-    let sample_image_pixbuf_loader = PixbufLoader::new();
-    let sample_image = Picture::builder()
-        .width_request(400)
-        .height_request(300)
-        .valign(Align::Start)
-        .build();
-    texture_container.append(&sample_image);
-
     let v_box = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .spacing(10)
@@ -155,8 +143,12 @@ fn build_browse_window(
     // let test_button = gtk::Button::builder()
     //     .label("Rip and tear!")
     //     .build();
+    // let m_grid = mason_grid::MasonGrid::new();
+    let m_grid = gtk::Box::builder()
+        .layout_manager(&mason_grid_layout::MasonGridLayout::default())
+        .build();
     let h_box_browse = gtk::ScrolledWindow::builder().vexpand(true).build();
-    h_box_browse.set_child(Some(&texture_container));
+    h_box_browse.set_child(Some(&m_grid));
     v_box.append(&h_box_browse);
 
     let footer_peer_download_from_count_button =
@@ -186,6 +178,7 @@ fn build_browse_window(
             .replace(None)
             .take()
             .expect("data_event_reciver");
+        let sample_image_pixbuf_loader = PixbufLoader::new();
         async move {
             while let Some(event) = data_event_receiver.recv().await {
                 match event {
@@ -195,15 +188,24 @@ fn build_browse_window(
                             chunk.data.len()
                         );
                         sample_image_pixbuf_loader.write(&chunk.data).unwrap();
-                        let sample_image_pixbuf =
-                            sample_image_pixbuf_loader.pixbuf().unwrap();
-                        let sample_image_paintable =
-                            Texture::for_pixbuf(sample_image_pixbuf.as_ref());
-                        sample_image
-                            .set_paintable(Some(&sample_image_paintable));
+                        // let sample_image_pixbuf =
+                        //     sample_image_pixbuf_loader.pixbuf().unwrap();
+                        // let sample_image_paintable =
+                        //     Texture::for_pixbuf(sample_image_pixbuf.as_ref());
+                        // sample_image
+                        //     .set_paintable(Some(&sample_image_paintable));
                     }
                     DataEvent::FinishedReceivingSampleCid => {
                         sample_image_pixbuf_loader.close().unwrap();
+                        let pixbuf =
+                            sample_image_pixbuf_loader.pixbuf().unwrap();
+                        for _ in 0..10 {
+                            let sample_image = Picture::builder()
+                                .paintable(&Texture::for_pixbuf(&pixbuf))
+                                .content_fit(ContentFit::Fill)
+                                .build();
+                            m_grid.append(&sample_image);
+                        }
                     }
                 }
             }
