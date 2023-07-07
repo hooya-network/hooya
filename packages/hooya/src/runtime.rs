@@ -100,4 +100,16 @@ impl Runtime {
         // eg bafkreifh22[...]fpydri is stored at ydri/bafkreifh22[...]
         Ok(final_dir.join(encoded_cid))
     }
+
+    pub async fn random_local_cid(&self, count: u32) -> Result<Vec<Vec<u8>>> {
+        let files = self
+            .db
+            .random_file(count)
+            .await?
+            .into_iter()
+            .map(|f| f.cid)
+            .collect();
+
+        Ok(files)
+    }
 }

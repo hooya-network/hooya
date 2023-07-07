@@ -8,7 +8,7 @@ use gtk::{
     STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::{ContentAtCidRequest, FileChunk};
+use hooya::proto::{ContentAtCidRequest, FileChunk, RandomLocalCidRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread;
@@ -75,11 +75,12 @@ fn main() -> glib::ExitCode {
                 .await
                 .expect("Connect to hooyad"); // TODO UI for this
 
-            let sample_cid = hooya::cid::decode(
-                "bafkreidamyljxqvgsugnn6l6tdgthoplckhyb5rvxbcucrk2hlsmpf74py",
-            )
-            .unwrap()
-            .1;
+            let sample_cid = &client
+                .random_local_cid(RandomLocalCidRequest { count: 1 })
+                .await
+                .unwrap()
+                .into_inner()
+                .cid[0];
             let resp = client
                 .content_at_cid(ContentAtCidRequest {
                     cid: sample_cid.clone(),

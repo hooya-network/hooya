@@ -184,4 +184,26 @@ impl Db {
 
         Ok(file_row)
     }
+
+    pub async fn random_file(&self, count: u32) -> Result<Vec<FileRow>> {
+        let file_rows = sqlx::query(
+            "SELECT Cid, Mimetype, Size FROM Files ORDER BY RANDOM() LIMIT ?",
+        )
+        .bind(count)
+        .try_map(|r: SqliteRow| {
+            let cid = r.try_get("Cid")?;
+            let mimetype = r.try_get("Mimetype")?;
+            let size = r.try_get("Size")?;
+
+            Ok(FileRow {
+                cid,
+                mimetype,
+                size,
+            })
+        })
+        .fetch_all(&self.executor)
+        .await?;
+
+        Ok(file_rows)
+    }
 }

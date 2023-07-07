@@ -4,8 +4,8 @@ use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     ContentAtCidRequest, FileChunk, ForgetFileReply, ForgetFileRequest,
-    StreamToFilestoreReply, TagCidReply, TagCidRequest, VersionReply,
-    VersionRequest,
+    RandomLocalCidReply, RandomLocalCidRequest, StreamToFilestoreReply,
+    TagCidReply, TagCidRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -138,6 +138,23 @@ impl Control for IControl {
         };
 
         Ok(Response::new(Box::pin(output) as Self::ContentAtCidStream))
+    }
+
+    async fn random_local_cid(
+        &self,
+        r: Request<RandomLocalCidRequest>,
+    ) -> Result<Response<RandomLocalCidReply>, Status> {
+        let req = r.into_inner();
+
+        let cid = self
+            .runtime
+            .random_local_cid(req.count)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let resp = RandomLocalCidReply { cid };
+
+        Ok(Response::new(resp))
     }
 
     async fn forget_file(

@@ -9,6 +9,7 @@ service Control {
     rpc TagCid (TagCidRequest) returns (TagCidReply);
     rpc ContentAtCid (ContentAtCidRequest) returns (stream FileChunk);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
+    rpc RandomLocalCID (RandomLocalCIDRequest) returns (RandomLocalCIDReply);
 }
 
 message VersionRequest { }
@@ -18,6 +19,14 @@ message VersionReply {
     uint64 minor_version = 2;
     uint64 patch_version = 3;
     string pre_version = 4;
+}
+
+message RandomLocalCIDRequest {
+    uint32 count = 1;
+}
+
+message RandomLocalCIDReply {
+    repeated bytes cid = 1;
 }
 
 message FileChunk {
