@@ -2,6 +2,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
+use gtk::glib::clone;
 use gtk::{glib, Application, ApplicationWindow, ContentFit};
 use gtk::{
     prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
@@ -23,8 +24,7 @@ mod mason_grid_layout;
 enum UiEvent {}
 
 enum DataEvent {
-    SampleCidDataChunk { chunk: FileChunk },
-    FinishedReceivingSampleCid,
+    AppendImageToGrid { stream: tonic::Streaming<FileChunk> },
 }
 
 const APP_ID: &str = "org.hooya.hooya_gtk";
@@ -75,30 +75,25 @@ fn main() -> glib::ExitCode {
                 .await
                 .expect("Connect to hooyad"); // TODO UI for this
 
-            let sample_cid = &client
-                .random_local_cid(RandomLocalCidRequest { count: 1 })
+            let rand_cids = client
+                .random_local_cid(RandomLocalCidRequest { count: 3 })
                 .await
                 .unwrap()
                 .into_inner()
-                .cid[0];
-            let resp = client
-                .content_at_cid(ContentAtCidRequest {
-                    cid: sample_cid.clone(),
-                })
-                .await
-                .unwrap();
-
-            let mut stream = resp.into_inner();
-            while let Some(chunk) = stream.message().await.unwrap() {
-                data_event_sender
-                    .send(DataEvent::SampleCidDataChunk { chunk })
+                .cid;
+            for cid in rand_cids {
+                println!("{}", hooya::cid::encode(&cid));
+                let resp = client
+                    .content_at_cid(ContentAtCidRequest { cid })
                     .await
-                    .expect("Receiving chunk");
+                    .unwrap();
+
+                let stream = resp.into_inner();
+                data_event_sender
+                    .send(DataEvent::AppendImageToGrid { stream })
+                    .await
+                    .unwrap();
             }
-            data_event_sender
-                .send(DataEvent::FinishedReceivingSampleCid)
-                .await
-                .expect("Finalized")
         });
     });
 
@@ -178,27 +173,48 @@ fn build_browse_window(
             .replace(None)
             .take()
             .expect("data_event_reciver");
-        let sample_image_pixbuf_loader = PixbufLoader::new();
         async move {
             while let Some(event) = data_event_receiver.recv().await {
                 match event {
-                    DataEvent::SampleCidDataChunk { chunk, .. } => {
-                        println!(
-                            "UI sees data chunk of size {}",
-                            chunk.data.len()
-                        );
-                        sample_image_pixbuf_loader.write(&chunk.data).unwrap();
-                    }
-                    DataEvent::FinishedReceivingSampleCid => {
-                        sample_image_pixbuf_loader.close().unwrap();
-                        let pixbuf =
-                            sample_image_pixbuf_loader.pixbuf().unwrap();
-                        for _ in 0..10 {
-                            let sample_image = Picture::builder()
-                                .paintable(&Texture::for_pixbuf(&pixbuf))
-                                .content_fit(ContentFit::Fill)
-                                .build();
-                            m_grid.append(&sample_image);
+                    DataEvent::AppendImageToGrid { mut stream } => {
+                        println!("UI sees stream of data");
+                        let pb_loader = PixbufLoader::new();
+                        let img = Picture::builder()
+                            .content_fit(ContentFit::Fill)
+                            .build();
+                        m_grid.append(&img);
+                        pb_loader.connect_area_updated(clone!(@strong img => move |pb, _, _, _, _| {
+                            let pixbuf = pb.pixbuf().unwrap();
+                            img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
+                        }));
+                        let mut read_count = 0;
+                        loop {
+                            match stream.message().await {
+                                Ok(m) => match m {
+                                    Some(m) => {
+                                        let f_chunk = &m.data;
+
+                                        if read_count == 0 {}
+
+                                        pb_loader.write(f_chunk).unwrap();
+                                        read_count += f_chunk.len();
+                                    }
+                                    None => {
+                                        let res = pb_loader.close();
+                                        if let Err(e) = res {
+                                            m_grid.remove(&img);
+                                            println!("ERR {}", e)
+                                        }
+                                        break;
+                                    }
+                                },
+                                Err(_e) => {
+                                    m_grid.remove(&img);
+                                    if let Err(e) = pb_loader.close() {
+                                        println!("ERR {}", e);
+                                    }
+                                }
+                            };
                         }
                     }
                 }
