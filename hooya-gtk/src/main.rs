@@ -3,7 +3,7 @@ use dotenv::dotenv;
 use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::glib::clone;
-use gtk::{glib, Application, ApplicationWindow, ContentFit};
+use gtk::{glib, Application, ApplicationWindow, ContentFit, Entry};
 use gtk::{
     prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
     STYLE_PROVIDER_PRIORITY_APPLICATION,
@@ -320,7 +320,11 @@ fn build_page_nav(curr: u32, max: u32) -> gtk::Box {
     for i in 1..until {
         let dist = curr.abs_diff(i);
         if i == curr {
-            let child = Label::builder().label(i.to_string()).build();
+            let child = Entry::builder()
+                .max_width_chars(3)
+                .text(i.to_string())
+                .build();
+            child.set_xalign(0.5);
             ret.append(&child);
         } else if i == 1 || i == max || dist <= max_show_either_side {
             let child = Button::builder().label(i.to_string()).build();

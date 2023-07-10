@@ -109,15 +109,21 @@ impl MasonGridLayout {
                 // Expand-to-fill all except last row
                 let row_width = x_offset;
                 let scaled_height = (width * MASON_ROW_HEIGHT) / (row_width);
-                for c in curr_row.iter_mut() {
+                let curr_row_len = curr_row.len();
+                let mut acc_row_width = 0;
+                for (i, c) in curr_row.iter_mut().enumerate() {
                     let dividend = width * c.width;
-                    let scaled_width = if dividend % row_width == 0 {
-                        dividend / row_width
-                    } else {
-                        (dividend / row_width) + 1
-                    };
+                    let scaled_width = dividend / row_width;
+
                     c.height = scaled_height;
                     c.width = scaled_width;
+                    acc_row_width += c.width;
+
+                    if i == curr_row_len - 1 {
+                        // Distort last item in a row slightly if it means
+                        // fitting exactly within the container
+                        c.width -= acc_row_width - width;
+                    }
                 }
 
                 rows.push(curr_row.clone());
