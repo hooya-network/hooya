@@ -9,11 +9,14 @@ use gtk::{
     STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::{ContentAtCidRequest, FileChunk, RandomLocalCidRequest};
+use hooya::proto::{ContentAtCidRequest, RandomLocalCidRequest};
 use std::cell::RefCell;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::thread;
+use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio_stream::{Stream, StreamExt};
 use tonic::transport::Channel;
 
 // TODO Share with CLI client
@@ -21,10 +24,17 @@ mod config;
 
 mod mason_grid_layout;
 
+struct IncomingImage {
+    cid: Vec<u8>,
+    chunk: Vec<u8>,
+}
+
 enum UiEvent {}
 
 enum DataEvent {
-    AppendImageToGrid { stream: tonic::Streaming<FileChunk> },
+    AppendImageToGrid {
+        stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
+    },
 }
 
 const APP_ID: &str = "org.hooya.hooya_gtk";
@@ -43,9 +53,10 @@ fn main() -> glib::ExitCode {
     let application = Application::builder().application_id(APP_ID).build();
 
     // thread-to-thread communication
-    let (ui_event_sender, _) = tokio::sync::mpsc::channel(100);
+    let (ui_event_sender, mut ui_event_receiver) =
+        tokio::sync::mpsc::channel(1);
     let (data_event_sender, data_event_receiver) =
-        tokio::sync::mpsc::channel(100);
+        tokio::sync::mpsc::channel(1);
 
     let data_event_receiver = Rc::new(RefCell::new(Some(data_event_receiver)));
     application.connect_activate(move |app| {
@@ -65,7 +76,9 @@ fn main() -> glib::ExitCode {
     });
 
     thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Tokio runtime");
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().expect("create tokio runtime");
+
         rt.block_on(async {
             let mut client: ControlClient<Channel> =
                 ControlClient::connect(format!(
@@ -76,25 +89,38 @@ fn main() -> glib::ExitCode {
                 .expect("Connect to hooyad"); // TODO UI for this
 
             let rand_cids = client
-                .random_local_cid(RandomLocalCidRequest { count: 3 })
+                .random_local_cid(RandomLocalCidRequest { count: 100 })
                 .await
                 .unwrap()
                 .into_inner()
                 .cid;
+
             for cid in rand_cids {
-                println!("{}", hooya::cid::encode(&cid));
                 let resp = client
-                    .content_at_cid(ContentAtCidRequest { cid })
+                    .content_at_cid(ContentAtCidRequest { cid: cid.clone() })
                     .await
                     .unwrap();
 
-                let stream = resp.into_inner();
+                let inner_resp = resp.into_inner();
+                let stream = Box::pin(
+                    inner_resp
+                        .map(move |c| {
+                            let chunk = c.unwrap().data;
+                            IncomingImage {
+                                chunk,
+                                cid: cid.clone(),
+                            }
+                        })
+                        // Minimal delay to allow GUI to maybe update during stream
+                        .throttle(Duration::from_millis(20)),
+                );
                 data_event_sender
                     .send(DataEvent::AppendImageToGrid { stream })
                     .await
                     .unwrap();
             }
-        });
+            while let Some(_m) = ui_event_receiver.recv().await {}
+        })
     });
 
     application.run()
@@ -109,7 +135,7 @@ fn build_browse_window(
         .application(app)
         .title("Browse HooYa!")
         .default_width(800)
-        .default_height(800)
+        .default_height(1600)
         .build();
 
     let v_box = gtk::Box::builder()
@@ -168,62 +194,40 @@ fn build_browse_window(
     h_box_footer.add_css_class("footer");
     v_box.append(&h_box_footer);
 
-    let future = {
+    let c = glib::MainContext::default();
+
+    // Network event receiver
+    c.spawn_local(async move {
         let mut data_event_receiver = data_event_receiver
             .replace(None)
             .take()
             .expect("data_event_reciver");
-        async move {
-            while let Some(event) = data_event_receiver.recv().await {
-                match event {
-                    DataEvent::AppendImageToGrid { mut stream } => {
-                        println!("UI sees stream of data");
-                        let pb_loader = PixbufLoader::new();
-                        let img = Picture::builder()
-                            .content_fit(ContentFit::Fill)
-                            .build();
-                        m_grid.append(&img);
-                        pb_loader.connect_area_updated(clone!(@strong img => move |pb, _, _, _, _| {
-                            let pixbuf = pb.pixbuf().unwrap();
-                            img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
-                        }));
-                        let mut read_count = 0;
-                        loop {
-                            match stream.message().await {
-                                Ok(m) => match m {
-                                    Some(m) => {
-                                        let f_chunk = &m.data;
-
-                                        if read_count == 0 {}
-
-                                        pb_loader.write(f_chunk).unwrap();
-                                        read_count += f_chunk.len();
-                                    }
-                                    None => {
-                                        let res = pb_loader.close();
-                                        if let Err(e) = res {
-                                            m_grid.remove(&img);
-                                            println!("ERR {}", e)
-                                        }
-                                        break;
-                                    }
-                                },
-                                Err(_e) => {
-                                    m_grid.remove(&img);
-                                    if let Err(e) = pb_loader.close() {
-                                        println!("ERR {}", e);
-                                    }
-                                }
-                            };
-                        }
+        while let Some(event) = data_event_receiver.recv().await {
+            match event {
+                DataEvent::AppendImageToGrid { mut stream } => {
+                    let pb_loader = PixbufLoader::new();
+                    let img = Picture::builder()
+                        .content_fit(ContentFit::Fill)
+                        .build();
+                    m_grid.append(&img);
+                    pb_loader.connect_area_prepared(clone!(@strong img => move |pb| {
+                        let pixbuf = pb.pixbuf().unwrap();
+                        img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
+                    }));
+                    while let Some(i_img) = stream.next().await {
+                        let f_chunk = i_img.chunk;
+                        println!("{}", hooya::cid::encode(i_img.cid));
+                        pb_loader.write(&f_chunk).unwrap();
+                    }
+                    let res = pb_loader.close();
+                    if let Err(e) = res {
+                        m_grid.remove(&img);
+                        println!("AERR {}", e)
                     }
                 }
             }
         }
-    };
-
-    let c = glib::MainContext::default();
-    c.spawn_local(future);
+    });
 
     window.present();
 }

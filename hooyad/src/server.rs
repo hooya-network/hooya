@@ -128,16 +128,14 @@ impl Control for IControl {
             .map_err(|e| Status::internal(e.to_string()))?;
         let fh = File::open(local_file)?;
 
-        let output = async_stream::try_stream! {
-            let chunks = hooya::ChunkedReader::new(fh);
-            for c in chunks {
-                yield FileChunk {
-                    data: c?,
-                }
-            }
-        };
+        let chunks = hooya::ChunkedReader::new(fh);
+        let stream = tokio_stream::iter(chunks).map(move |c| {
+            let data = c?;
+            println!("{}", hooya::cid::encode(cid.clone()));
+            Ok(FileChunk { data })
+        });
 
-        Ok(Response::new(Box::pin(output) as Self::ContentAtCidStream))
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn random_local_cid(

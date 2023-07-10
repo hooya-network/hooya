@@ -87,7 +87,10 @@ impl MasonGridLayout {
         widget: &gtk::Widget,
         width: i32,
     ) -> Vec<Vec<GridItem>> {
-        let mut child = widget.first_child().unwrap();
+        let mut child = match widget.first_child() {
+            Some(c) => c,
+            None => return vec![],
+        };
         let mut child_width;
         let mut x_offset = 0;
         let mut curr_row: Vec<GridItem> = vec![];
@@ -165,6 +168,10 @@ fn scaled_width_given_height(child: &Widget, height: i32) -> i32 {
     }
     if child_req.width() == 0 {
         child_width = child_min_width.max(child_nat_width);
+    }
+
+    if child_height == 0 {
+        return 0;
     }
 
     height * child_width / child_height
