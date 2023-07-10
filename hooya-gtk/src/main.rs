@@ -1,9 +1,11 @@
 use clap::{command, Arg};
 use dotenv::dotenv;
-use gtk::gdk::{Display, Texture};
+use gtk::gdk::{Cursor, Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::glib::clone;
-use gtk::{glib, Application, ApplicationWindow, ContentFit, Entry};
+use gtk::{
+    glib, Application, ApplicationWindow, ContentFit, Entry, GestureClick,
+};
 use gtk::{
     prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
     STYLE_PROVIDER_PRIORITY_APPLICATION,
@@ -25,7 +27,6 @@ mod config;
 mod mason_grid_layout;
 
 struct IncomingImage {
-    cid: Vec<u8>,
     chunk: Vec<u8>,
 }
 
@@ -33,6 +34,7 @@ enum UiEvent {}
 
 enum DataEvent {
     AppendImageToGrid {
+        cid: Vec<u8>,
         stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
     },
 }
@@ -106,16 +108,13 @@ fn main() -> glib::ExitCode {
                     inner_resp
                         .map(move |c| {
                             let chunk = c.unwrap().data;
-                            IncomingImage {
-                                chunk,
-                                cid: cid.clone(),
-                            }
+                            IncomingImage { chunk }
                         })
                         // Minimal delay to allow GUI to maybe update during stream
                         .throttle(Duration::from_millis(20)),
                 );
                 data_event_sender
-                    .send(DataEvent::AppendImageToGrid { stream })
+                    .send(DataEvent::AppendImageToGrid { cid, stream })
                     .await
                     .unwrap();
             }
@@ -204,21 +203,35 @@ fn build_browse_window(
             .expect("data_event_reciver");
         while let Some(event) = data_event_receiver.recv().await {
             match event {
-                DataEvent::AppendImageToGrid { mut stream } => {
+                DataEvent::AppendImageToGrid { cid, mut stream } => {
                     let pb_loader = PixbufLoader::new();
                     let img = Picture::builder()
                         .content_fit(ContentFit::Fill)
+                        .cursor(&Cursor::from_name("grab", None).unwrap())
                         .build();
                     m_grid.append(&img);
                     pb_loader.connect_area_prepared(clone!(@strong img => move |pb| {
                         let pixbuf = pb.pixbuf().unwrap();
                         img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
                     }));
+
                     while let Some(i_img) = stream.next().await {
                         let f_chunk = i_img.chunk;
-                        println!("{}", hooya::cid::encode(i_img.cid));
                         pb_loader.write(&f_chunk).unwrap();
                     }
+
+                    let gesture = GestureClick::builder()
+                        .build();
+
+                    gesture.connect_pressed(clone!(@strong cid => move |_, n, _, _| {
+                        if n == 2 {
+                            // Double-click
+                            println!("Will soon open window for {}", hooya::cid::encode(cid.clone()));
+                        }
+                    }));
+
+                    img.add_controller(gesture);
+
                     let res = pb_loader.close();
                     if let Err(e) = res {
                         m_grid.remove(&img);
