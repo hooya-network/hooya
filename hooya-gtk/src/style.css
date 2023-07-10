@@ -1,4 +1,28 @@
-.footer {
+#footer {
     background-color: lightgray;
-    padding: 0 10px;
+    padding: 5px 10px;
+}
+
+#view-head {
+    font-size: 1.7rem;
+}
+
+#view-grid {
+    margin: 0 20px;
+    border-width: 0 3px;
+    border-style: solid;
+}
+
+#page-nav {
+    margin: 0 20px;
+}
+
+#page-nav > button {
+    border: 1px solid black;
+    padding: 5px 10px;
+}
+
+window {
+    background-color: white;
+    font-family: "Lexend", "Sans";
 }

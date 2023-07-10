@@ -157,6 +157,7 @@ fn build_browse_window(
         Button::builder().icon_name("system-search").build();
     let h_box_text = Label::builder()
         .label("Browsing — All Files")
+        .name("view-head")
         .halign(Align::Start)
         .hexpand(true)
         .build();
@@ -167,6 +168,7 @@ fn build_browse_window(
     //     .build();
     let m_grid = gtk::Box::builder()
         .layout_manager(&mason_grid_layout::MasonGridLayout::default())
+        .name("view-grid")
         .build();
     let h_box_browse = gtk::ScrolledWindow::builder().vexpand(true).build();
     h_box_browse.set_child(Some(&m_grid));
@@ -179,19 +181,17 @@ fn build_browse_window(
     let footer_favorites_count_button = build_footer_favorites_element();
     let footer_public_count_button = build_footer_public_element();
 
-    let h_box_pagination = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .build();
+    let h_box_pagination = build_page_nav(1, 20);
     v_box.append(&h_box_pagination);
     let h_box_footer = gtk::Box::builder()
         .orientation(Orientation::Horizontal)
         .spacing(10)
+        .name("footer")
         .build();
     h_box_footer.append(&footer_peer_download_from_count_button);
     h_box_footer.append(&footer_peer_upload_to_count_button);
     h_box_footer.append(&footer_favorites_count_button);
     h_box_footer.append(&footer_public_count_button);
-    h_box_footer.add_css_class("footer");
     v_box.append(&h_box_footer);
 
     let c = glib::MainContext::default();
@@ -298,4 +298,38 @@ fn build_footer_public_element() -> gtk::Box {
     footer_public_count_button.append(&footer_public_count_txt);
 
     footer_public_count_button
+}
+
+// TODO Subclass this
+fn build_page_nav(curr: u32, max: u32) -> gtk::Box {
+    let ret = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(20)
+        .name("page-nav")
+        .build();
+
+    let max_show_either_side = 2;
+    let until = max + 1;
+
+    // What are you trying to do
+    if curr > max || curr < 1 || max < 1 {
+        println!("Tried to construct page nav with illegal bounds!");
+        return ret;
+    }
+
+    for i in 1..until {
+        let dist = curr.abs_diff(i);
+        if i == curr {
+            let child = Label::builder().label(i.to_string()).build();
+            ret.append(&child);
+        } else if i == 1 || i == max || dist <= max_show_either_side {
+            let child = Button::builder().label(i.to_string()).build();
+            ret.append(&child);
+        } else if dist == max_show_either_side + 1 {
+            let child = Label::builder().label("…").build();
+            ret.append(&child);
+        }
+    }
+
+    ret
 }
