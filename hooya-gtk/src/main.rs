@@ -12,14 +12,13 @@ use gtk::{
 };
 use hooya::proto::control_client::ControlClient;
 use hooya::proto::{ContentAtCidRequest, RandomLocalCidRequest};
-use std::cell::RefCell;
 use std::pin::Pin;
-use std::rc::Rc;
+use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 
 // TODO Share with CLI client
 mod config;
@@ -30,7 +29,9 @@ struct IncomingImage {
     chunk: Vec<u8>,
 }
 
-enum UiEvent {}
+enum UiEvent {
+    GridItemClicked { cid: Vec<u8> },
+}
 
 enum DataEvent {
     AppendImageToGrid {
@@ -54,13 +55,6 @@ fn main() -> glib::ExitCode {
 
     let application = Application::builder().application_id(APP_ID).build();
 
-    // thread-to-thread communication
-    let (ui_event_sender, mut ui_event_receiver) =
-        tokio::sync::mpsc::channel(1);
-    let (data_event_sender, data_event_receiver) =
-        tokio::sync::mpsc::channel(1);
-
-    let data_event_receiver = Rc::new(RefCell::new(Some(data_event_receiver)));
     application.connect_activate(move |app| {
         let provider = CssProvider::new();
         provider.load_from_data(include_str!("style.css"));
@@ -70,25 +64,34 @@ fn main() -> glib::ExitCode {
             STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        build_browse_window(
-            app,
-            ui_event_sender.clone(),
-            data_event_receiver.clone(),
-        )
+        let endpoint = Endpoint::from_str(&format!(
+            "http://{}",
+            matches.get_one::<String>("endpoint").unwrap()
+        ))
+        .unwrap();
+
+        build_ui(app, endpoint);
     });
+
+    application.run()
+}
+
+fn build_ui(app: &Application, endpoint: Endpoint) {
+    // Unbounded because this is called from buttons in the MainContext thread
+    // and therefore .send() does not block
+    let (ui_event_sender, mut ui_event_receiver) =
+        tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+
+    let data_event_sender = build_browse_window(app, ui_event_sender);
 
     thread::spawn(move || {
         use tokio::runtime::Runtime;
         let rt = Runtime::new().expect("create tokio runtime");
-
-        rt.block_on(async {
+        let j_1 = rt.spawn(async move {
             let mut client: ControlClient<Channel> =
-                ControlClient::connect(format!(
-                    "http://{}",
-                    matches.get_one::<String>("endpoint").unwrap()
-                ))
-                .await
-                .expect("Connect to hooyad"); // TODO UI for this
+                ControlClient::connect(endpoint)
+                    .await
+                    .expect("Connect to hooyad"); // TODO UI for this
 
             let rand_cids = client
                 .random_local_cid(RandomLocalCidRequest { count: 100 })
@@ -98,38 +101,63 @@ fn main() -> glib::ExitCode {
                 .cid;
 
             for cid in rand_cids {
-                let resp = client
+                let resp_res = client
                     .content_at_cid(ContentAtCidRequest { cid: cid.clone() })
-                    .await
-                    .unwrap();
+                    .await;
+                let inner_resp = match resp_res {
+                    Ok(resp) => resp.into_inner(),
+                    Err(e) => {
+                        println!("ERR {}", e);
+                        continue;
+                    }
+                };
 
-                let inner_resp = resp.into_inner();
                 let stream = Box::pin(
                     inner_resp
-                        .map(move |c| {
-                            let chunk = c.unwrap().data;
-                            IncomingImage { chunk }
-                        })
+                        .timeout(Duration::from_secs(2))
                         // Minimal delay to allow GUI to maybe update during stream
-                        .throttle(Duration::from_millis(20)),
+                        .throttle(Duration::from_millis(10))
+                        .map(move |c| {
+                            let chunk = c.unwrap().unwrap().data;
+                            IncomingImage { chunk }
+                        }),
                 );
                 data_event_sender
                     .send(DataEvent::AppendImageToGrid { cid, stream })
                     .await
                     .unwrap();
             }
-            while let Some(_m) = ui_event_receiver.recv().await {}
-        })
-    });
+        });
 
-    application.run()
+        let j_2 = rt.spawn(async move {
+            while let Some(event) = ui_event_receiver.recv().await {
+                match event {
+                    UiEvent::GridItemClicked { cid } => println!(
+                        "Will soon open window for {}",
+                        hooya::cid::encode(cid.clone())
+                    ),
+                }
+            }
+        });
+
+        let (res, _) = rt.block_on(async { tokio::join!(j_1, j_2) });
+        res.unwrap();
+    });
 }
 
 fn build_browse_window(
     app: &Application,
-    _ui_event_sender: Sender<UiEvent>,
-    data_event_receiver: Rc<RefCell<Option<Receiver<DataEvent>>>>,
-) {
+    ui_event_sender: UnboundedSender<UiEvent>,
+) -> Sender<DataEvent> {
+    // Bounded channel because otherwise we hammer the UI with data before it is
+    // done processing it.
+    //
+    // BUG Increasing this channel size by a factor of 10 has caused a hang in
+    // the .recv() method in the MainContext when sending > 100 large images.
+    // Not sure why and frankly I don't care rn
+    let (data_event_sender, mut data_event_receiver) =
+        tokio::sync::mpsc::channel(1);
+
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Browse HooYa!")
@@ -197,10 +225,6 @@ fn build_browse_window(
 
     // Network event receiver
     c.spawn_local(async move {
-        let mut data_event_receiver = data_event_receiver
-            .replace(None)
-            .take()
-            .expect("data_event_reciver");
         while let Some(event) = data_event_receiver.recv().await {
             match event {
                 DataEvent::AppendImageToGrid { cid, mut stream } => {
@@ -223,10 +247,11 @@ fn build_browse_window(
                     let gesture = GestureClick::builder()
                         .build();
 
-                    gesture.connect_pressed(clone!(@strong cid => move |_, n, _, _| {
+                    gesture.connect_pressed(clone!(@strong ui_event_sender => move |_, n, _, _| {
                         if n == 2 {
                             // Double-click
-                            println!("Will soon open window for {}", hooya::cid::encode(cid.clone()));
+                            ui_event_sender.send(UiEvent::GridItemClicked { cid: cid.clone() })
+                                .unwrap();
                         }
                     }));
 
@@ -243,6 +268,7 @@ fn build_browse_window(
     });
 
     window.present();
+    data_event_sender
 }
 
 // TODO Subclass this
