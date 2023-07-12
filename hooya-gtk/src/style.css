@@ -26,3 +26,8 @@ window {
     background-color: white;
     font-family: "Lexend", "Sans";
 }
+
+#view-grid > *:focus {
+    outline: 2px groove aqua;
+    outline-offset: -2px;
+}

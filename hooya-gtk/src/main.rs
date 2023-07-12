@@ -1,6 +1,6 @@
 use clap::{command, Arg};
 use dotenv::dotenv;
-use gtk::gdk::{Cursor, Display, Texture};
+use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::glib::clone;
 use gtk::{
@@ -242,7 +242,7 @@ fn build_browse_window(
                     let pb_loader = PixbufLoader::new();
                     let img = Picture::builder()
                         .content_fit(ContentFit::Fill)
-                        .cursor(&Cursor::from_name("grab", None).unwrap())
+                        .can_focus(true)
                         .build();
                     m_grid.append(&img);
                     pb_loader.connect_area_prepared(clone!(@strong img => move |pb| {
@@ -258,7 +258,13 @@ fn build_browse_window(
                     let gesture = GestureClick::builder()
                         .build();
 
-                    gesture.connect_pressed(clone!(@strong ui_event_sender => move |_, n, _, _| {
+                    gesture.connect_pressed(clone!(@strong ui_event_sender, @strong img => move |_, n, _, _| {
+                        // Bootleg focus, probably subclass this later to
+                        // handle things like pressing "enter" while focused
+                        if n == 1 {
+                            // Single-click
+                            img.grab_focus();
+                        }
                         if n == 2 {
                             // Double-click
                             ui_event_sender.send(UiEvent::GridItemClicked { cid: cid.clone() })
