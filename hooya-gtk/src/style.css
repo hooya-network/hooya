@@ -3,6 +3,10 @@
     padding: 5px 10px;
 }
 
+.subhead {
+    font-size: 1.2rem;
+}
+
 #view-head {
     font-size: 1.7rem;
 }
@@ -27,7 +31,28 @@ window {
     font-family: "Lexend", "Sans";
 }
 
+.descriptor-box {
+    outline: 1px solid black;
+    padding: 0 5px;
+}
+
 #view-grid > *:focus {
     outline: 2px groove aqua;
     outline-offset: -2px;
 }
+
+#single-image-view.horizontal picture {
+    border-right: 2px solid black;
+}
+
+#single-image-view.vertical picture {
+    border-right: 2px solid black;
+}
+
+.clickable { color: #0019FF; }
+.info-label { color: #FF00E6; }
+
+.namespace-artist { color: #FF0000; }
+.namespace-copyright { color: #BD00FF; }
+.namespace-character { color: #038F00; }
+.namespace-general { color: #00D1FF; }

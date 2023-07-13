@@ -1,10 +1,11 @@
 use clap::{command, Arg};
 use dotenv::dotenv;
-use gtk::gdk::{Display, Texture};
+use gtk::gdk::{self, Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::glib::clone;
 use gtk::{
-    glib, Application, ApplicationWindow, ContentFit, Entry, GestureClick,
+    glib, graphene, Application, ApplicationWindow, ContentFit, Entry, FlowBox,
+    GestureClick, ScrolledWindow, SelectionMode,
 };
 use gtk::{
     prelude::*, Align, Button, CssProvider, Image, Label, Orientation, Picture,
@@ -12,6 +13,8 @@ use gtk::{
 };
 use hooya::proto::control_client::ControlClient;
 use hooya::proto::{ContentAtCidRequest, RandomLocalCidRequest};
+use mason_grid_layout::MasonGridLayout;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::thread;
@@ -23,7 +26,6 @@ use tonic::transport::{Channel, Endpoint};
 // TODO Share with CLI client
 mod config;
 
-mod file_view_window;
 mod mason_grid_layout;
 
 struct IncomingImage {
@@ -40,7 +42,7 @@ enum DataEvent {
         stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
     },
     ViewImage {
-        _cid: Vec<u8>,
+        cid: Vec<u8>,
         stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
     },
 }
@@ -123,7 +125,7 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
                                 request_data_at_cid(client_2.clone(), cid.clone())
                                 .await);
                             data_event_sender
-                                .send(DataEvent::ViewImage { _cid: cid, stream })
+                                .send(DataEvent::ViewImage { cid, stream })
                                 .await
                                 .unwrap();
                         }
@@ -205,31 +207,18 @@ fn build_browse_window(
     //     .label("Rip and tear!")
     //     .build();
     let m_grid = gtk::Box::builder()
-        .layout_manager(&mason_grid_layout::MasonGridLayout::default())
+        .layout_manager(&MasonGridLayout::default())
         .name("view-grid")
         .build();
     let h_box_browse = gtk::ScrolledWindow::builder().vexpand(true).build();
     h_box_browse.set_child(Some(&m_grid));
     v_box.append(&h_box_browse);
 
-    let footer_peer_download_from_count_button =
-        build_footer_peer_download_from_element();
-    let footer_peer_upload_to_count_button =
-        build_footer_peer_upload_to_element();
-    let footer_favorites_count_button = build_footer_favorites_element();
-    let footer_public_count_button = build_footer_public_element();
+    let h_box_footer = build_footer();
 
     let h_box_pagination = build_page_nav(1, 20);
     v_box.append(&h_box_pagination);
-    let h_box_footer = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(10)
-        .name("footer")
-        .build();
-    h_box_footer.append(&footer_peer_download_from_count_button);
-    h_box_footer.append(&footer_peer_upload_to_count_button);
-    h_box_footer.append(&footer_favorites_count_button);
-    h_box_footer.append(&footer_public_count_button);
+
     v_box.append(&h_box_footer);
 
     let c = glib::MainContext::default();
@@ -242,6 +231,7 @@ fn build_browse_window(
                     let pb_loader = PixbufLoader::new();
                     let img = Picture::builder()
                         .content_fit(ContentFit::Fill)
+                        .focusable(true)
                         .can_focus(true)
                         .build();
                     m_grid.append(&img);
@@ -280,32 +270,9 @@ fn build_browse_window(
                         println!("AERR {}", e)
                     }
                 }
-                DataEvent::ViewImage { _cid, mut stream } => {
-                    let window = file_view_window::FileViewWindow::new(&app);
-                    window.present();
-
-                    let pb_loader = PixbufLoader::new();
-                    let img = Picture::builder()
-                        .build();
-                    window.set_child(Some(&img));
-                    pb_loader.connect_area_prepared(clone!(@strong window, @strong img => move |pb| {
-                        let pixbuf = pb.pixbuf().unwrap();
-                        img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
-                        let (req_width, req_height) = clamp_dimensions(pixbuf.width(), pixbuf.height(),
-                            500, 500);
-                        window.set_size_request(req_width, req_height);
-                    }));
-
-                    while let Some(i_img) = stream.next().await {
-                        let f_chunk = i_img.chunk;
-                        pb_loader.write(&f_chunk).unwrap();
-                    }
-
-                    let res = pb_loader.close();
-                    if let Err(e) = res {
-                        window.close();
-                        println!("AERR {}", e)
-                    }
+                DataEvent::ViewImage { cid, stream } => {
+                    build_file_view_window(&app, cid, stream)
+                        .await;
                 }
             }
         }
@@ -313,6 +280,327 @@ fn build_browse_window(
 
     window.present();
     data_event_sender
+}
+
+fn build_footer() -> gtk::Box {
+    let footer_peer_download_from_count_button =
+        build_footer_peer_download_from_element();
+    let footer_peer_upload_to_count_button =
+        build_footer_peer_upload_to_element();
+    let footer_favorites_count_button = build_footer_favorites_element();
+    let footer_public_count_button = build_footer_public_element();
+
+    let h_box_footer = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(10)
+        .name("footer")
+        .build();
+    h_box_footer.append(&footer_peer_download_from_count_button);
+    h_box_footer.append(&footer_peer_upload_to_count_button);
+    h_box_footer.append(&footer_favorites_count_button);
+    h_box_footer.append(&footer_public_count_button);
+
+    h_box_footer
+}
+
+async fn build_file_view_window(
+    app: &Application,
+    cid: Vec<u8>,
+    mut stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
+) {
+    let window = ApplicationWindow::new(app);
+    window.present();
+
+    let pb_loader = PixbufLoader::new();
+
+    let v_box = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .build();
+
+    let main_box = gtk::Box::builder()
+        .name("single-image-view")
+        .vexpand(true)
+        .build();
+
+    // TODO Don't construct this here but hold one per app and pass by
+    // reference because the values will be real-time, not static as they
+    // are now
+    let footer = build_footer();
+
+    let detail_box = gtk::Box::builder()
+        .margin_start(10)
+        .margin_end(10)
+        .spacing(20)
+        .orientation(Orientation::Vertical)
+        .build();
+
+    let tags_box = FlowBox::builder()
+        .column_spacing(10)
+        .column_spacing(10)
+        .selection_mode(SelectionMode::None)
+        .orientation(Orientation::Horizontal)
+        .build();
+
+    for (namespace, descriptors) in sample_file_tags() {
+        let namespace_box = gtk::Box::builder()
+            .halign(Align::Start)
+            .orientation(Orientation::Vertical)
+            .build();
+        let namespace_subheading = Label::builder()
+            .label(namespace.clone())
+            .css_classes(["subhead"])
+            .build();
+        let tag_box = FlowBox::builder()
+            .orientation(Orientation::Horizontal)
+            .selection_mode(SelectionMode::None)
+            .build();
+        for d in descriptors {
+            let d_box = gtk::Box::builder()
+                .css_classes([
+                    &format!("namespace-{}", namespace),
+                    "descriptor-box",
+                ])
+                .halign(Align::Start)
+                .build();
+
+            let d_info = Label::builder().label("?").build();
+
+            let d_label = Label::builder().label(d).build();
+
+            d_box.append(&d_info);
+            d_box.append(&d_label);
+            tag_box.append(&d_box);
+        }
+
+        namespace_box.append(&namespace_subheading);
+        namespace_box.append(&tag_box);
+        tags_box.append(&namespace_box);
+    }
+
+    let net_info_box = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .build();
+
+    net_info_box.append(
+        &Label::builder()
+            .label("Net Info")
+            .halign(Align::Start)
+            .css_classes(["subhead"])
+            .build(),
+    );
+
+    let file_info_box = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .build();
+
+    file_info_box.append(
+        &Label::builder()
+            .label("File Info")
+            .halign(Align::Start)
+            .css_classes(["subhead"])
+            .build(),
+    );
+
+    let sample_props = [
+        ("CID", hooya::cid::encode(cid), true),
+        ("Mimetype", "image/png".to_string(), false),
+        ("Size", "1.3MiB".to_string(), false),
+        ("Dimensions", "1396x2500 (3.7 MPixel)".to_string(), false),
+    ];
+
+    for p in sample_props {
+        let row = gtk::Box::builder().spacing(10).build();
+
+        let label_box = gtk::Box::builder().css_classes(["info-label"]).build();
+
+        let info_label = Label::builder().label("?").build();
+        let label = Label::builder().label(p.0).build();
+
+        let val = Label::builder().label(p.1).build();
+
+        if p.2 {
+            val.set_css_classes(&["clickable"]);
+        }
+
+        label_box.append(&info_label);
+        label_box.append(&label);
+        row.append(&label_box);
+        row.append(&val);
+        file_info_box.append(&row);
+    }
+
+    let sample_net_props = [
+        ("Uploader", "wesl-ee.eth", true),
+        ("Mimetype", "None", false),
+        ("Date", "6 hours ago", false),
+        ("Favorites", "20", false),
+        ("Duplication", "3 peers", true),
+        ("Rating", "Safe", false),
+        ("Source", "pixiv.net/artworks/109539168", true),
+    ];
+
+    for p in sample_net_props {
+        let row = gtk::Box::builder().spacing(10).build();
+
+        let label_box = gtk::Box::builder().css_classes(["info-label"]).build();
+
+        let info_label = Label::builder().label("?").build();
+        let label = Label::builder().label(p.0).build();
+
+        let val = Label::builder().label(p.1).build();
+
+        if p.2 {
+            val.set_css_classes(&["clickable"]);
+        }
+
+        label_box.append(&info_label);
+        label_box.append(&label);
+        row.append(&label_box);
+        row.append(&val);
+        net_info_box.append(&row);
+    }
+
+    let img = Picture::builder().build();
+
+    detail_box.append(&tags_box);
+    detail_box.append(&file_info_box);
+    detail_box.append(&net_info_box);
+    let scroll_detail_window = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&detail_box)
+        .build();
+
+    main_box.append(&img);
+    main_box.append(&scroll_detail_window);
+    v_box.append(&main_box);
+    v_box.append(&footer);
+    window.set_child(Some(&v_box));
+
+    pb_loader.connect_area_prepared(clone!(@strong window => move |pb| {
+        let pixbuf = pb.pixbuf().unwrap();
+        img.set_paintable(Some(&Texture::for_pixbuf(&pixbuf)));
+        // TODO Remember width, height if user has adjusted just to reduce
+        // UX friction
+        let (req_width, req_height) = clamp_dimensions(pixbuf.width(), pixbuf.height(),
+            500, 500);
+
+        img.set_height_request(req_height);
+        img.set_width_request(req_width);
+
+        if req_width > req_height {
+            main_box.set_css_classes(&["vertical-stack"]);
+            detail_box.set_hexpand(true);
+            tags_box.set_vexpand(true);
+            main_box.set_orientation(Orientation::Vertical);
+            // scroll_detail_window.set_height_request(req_height);
+            // window.set_default_height(req_height * 2);
+            scroll_detail_window.set_min_content_height(500.min(req_height));
+
+        } else {
+            v_box.set_css_classes(&["horizontal-stack"]);
+            detail_box.set_vexpand(true);
+            tags_box.set_hexpand(true);
+            main_box.set_orientation(Orientation::Horizontal);
+            // window.set_default_width(700.max(req_width * 2))
+            //
+            window.connect_default_width_notify(clone!(@strong main_box, @strong scroll_detail_window => move |w| {
+                // let (pref, _) = w.preferred_size();
+                // if w.default_width() < pref.width() {
+                //     w.set_default_size(req_width, req_height);
+                //     main_box.remove(&scroll_detail_window);
+                // }
+            }));
+
+        }
+    }));
+
+    while let Some(i_img) = stream.next().await {
+        let f_chunk = i_img.chunk;
+        pb_loader.write(&f_chunk).unwrap();
+    }
+
+    let res = pb_loader.close();
+    if let Err(e) = res {
+        window.close();
+        println!("AERR {}", e)
+    }
+}
+
+// TODO Custom widget would be better
+fn build_palette_box(colors: Vec<gdk::RGBA>) -> gtk::Box {
+    let ret = gtk::Box::builder().build();
+
+    let mut row = gtk::Box::builder().build();
+
+    for (i, c) in colors.iter().enumerate() {
+        if i % 4 == 0 {
+            ret.append(&row);
+            row = gtk::Box::builder().build();
+        }
+    }
+
+    ret.append(&row);
+
+    ret
+}
+
+fn sample_file_tags() -> HashMap<String, Vec<String>> {
+    use hooya::proto::Tag;
+
+    vec![
+        Tag {
+            namespace: "artist".to_string(),
+            descriptor: "jitama (bou)".to_string(),
+        },
+        Tag {
+            namespace: "copyright".to_string(),
+            descriptor: "mahoromatic".to_string(),
+        },
+        Tag {
+            namespace: "character".to_string(),
+            descriptor: "andou mahoro".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "1girl".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "on stomach".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "simple background".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "socks".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "maid headdress".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "leg up".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "naked sheet".to_string(),
+        },
+        Tag {
+            namespace: "general".to_string(),
+            descriptor: "long hair".to_string(),
+        },
+    ]
+    .iter()
+    .fold(HashMap::new(), |mut acc, t| {
+        let mut exist_namespace =
+            acc.get(&t.namespace).unwrap_or(&vec![]).to_owned();
+        exist_namespace.push(t.descriptor.clone());
+        acc.insert(t.namespace.clone(), exist_namespace);
+        acc
+    })
 }
 
 fn clamp_dimensions(
