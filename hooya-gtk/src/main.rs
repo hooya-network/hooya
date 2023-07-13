@@ -348,6 +348,7 @@ async fn build_file_view_window(
             .build();
         let namespace_subheading = Label::builder()
             .label(namespace.clone())
+            .halign(Align::Start)
             .css_classes(["subhead"])
             .build();
         let tag_box = FlowBox::builder()

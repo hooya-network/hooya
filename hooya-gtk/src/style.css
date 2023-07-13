@@ -3,13 +3,14 @@
     padding: 5px 10px;
 }
 
-.subhead {
-    font-size: 1.2rem;
+.subhead, #view-head {
+    font-family: "Lexend", "Sans";
+    text-transform: capitalize;
 }
 
-#view-head {
-    font-size: 1.7rem;
-}
+.subhead { font-size: 1.2rem; }
+
+#view-head { font-size: 1.7rem; }
 
 #view-grid {
     margin: 0 20px;
@@ -28,7 +29,7 @@
 
 window {
     background-color: white;
-    font-family: "Lexend", "Sans";
+    font-family: "Noto Sans", "Sans";
 }
 
 .descriptor-box {
@@ -46,7 +47,7 @@ window {
 }
 
 #single-image-view.vertical picture {
-    border-right: 2px solid black;
+    border-bottom: 2px solid black;
 }
 
 .clickable { color: #0019FF; }
