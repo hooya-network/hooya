@@ -1,10 +1,11 @@
 use clap::{command, Arg};
 use dotenv::dotenv;
-use gtk::gdk::{self, Display, Texture};
+use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
 use gtk::glib::clone;
+use gtk::pango::EllipsizeMode;
 use gtk::{
-    glib, graphene, Application, ApplicationWindow, ContentFit, Entry, FlowBox,
+    glib, Application, ApplicationWindow, ContentFit, Entry, FlowBox,
     GestureClick, ScrolledWindow, SelectionMode,
 };
 use gtk::{
@@ -417,7 +418,14 @@ async fn build_file_view_window(
         let info_label = Label::builder().label("?").build();
         let label = Label::builder().label(p.0).build();
 
-        let val = Label::builder().label(p.1).build();
+        let val = Label::builder().wrap(true).label(p.1).build();
+
+        if p.0 == "CID" {
+            // This element is the longest and norm,ally sets the
+            // container width
+            val.set_ellipsize(EllipsizeMode::Middle);
+            val.set_width_chars(30)
+        }
 
         if p.2 {
             val.set_css_classes(&["clickable"]);
@@ -448,7 +456,7 @@ async fn build_file_view_window(
         let info_label = Label::builder().label("?").build();
         let label = Label::builder().label(p.0).build();
 
-        let val = Label::builder().label(p.1).build();
+        let val = Label::builder().wrap(true).label(p.1).build();
 
         if p.2 {
             val.set_css_classes(&["clickable"]);
@@ -504,13 +512,13 @@ async fn build_file_view_window(
             main_box.set_orientation(Orientation::Horizontal);
             // window.set_default_width(700.max(req_width * 2))
             //
-            window.connect_default_width_notify(clone!(@strong main_box, @strong scroll_detail_window => move |w| {
+            // window.connect_default_width_notify(clone!(@strong main_box, @strong scroll_detail_window => move |w| {
                 // let (pref, _) = w.preferred_size();
                 // if w.default_width() < pref.width() {
                 //     w.set_default_size(req_width, req_height);
                 //     main_box.remove(&scroll_detail_window);
                 // }
-            }));
+            // }));
 
         }
     }));
@@ -528,22 +536,22 @@ async fn build_file_view_window(
 }
 
 // TODO Custom widget would be better
-fn build_palette_box(colors: Vec<gdk::RGBA>) -> gtk::Box {
-    let ret = gtk::Box::builder().build();
-
-    let mut row = gtk::Box::builder().build();
-
-    for (i, c) in colors.iter().enumerate() {
-        if i % 4 == 0 {
-            ret.append(&row);
-            row = gtk::Box::builder().build();
-        }
-    }
-
-    ret.append(&row);
-
-    ret
-}
+// fn build_palette_box(colors: Vec<gdk::RGBA>) -> gtk::Box {
+//     let ret = gtk::Box::builder().build();
+//
+//     let mut row = gtk::Box::builder().build();
+//
+//     for (i, c) in colors.iter().enumerate() {
+//         if i % 4 == 0 {
+//             ret.append(&row);
+//             row = gtk::Box::builder().build();
+//         }
+//     }
+//
+//     ret.append(&row);
+//
+//     ret
+// }
 
 fn sample_file_tags() -> HashMap<String, Vec<String>> {
     use hooya::proto::Tag;
