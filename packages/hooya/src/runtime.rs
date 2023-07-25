@@ -17,8 +17,7 @@ impl Runtime {
             fs::metadata(cid_store_path.clone())?.len().try_into()?; // TODO
 
         let mimetype = infer::get_from_path(&cid_store_path)?
-            .ok_or(anyhow::anyhow!("Failed to infer file mimetype"))?
-            .to_string();
+            .and_then(|i| Some(i.to_string()));
 
         let f = FileRow {
             cid,

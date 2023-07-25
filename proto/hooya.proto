@@ -9,7 +9,7 @@ message Tag {
 message File {
     bytes cid = 1;
     uint32 size = 2;
-    string mimetype = 3;
+    optional string mimetype = 3;
 }
 
 message Image {

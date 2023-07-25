@@ -14,7 +14,7 @@ pub struct TagRow {
 pub struct FileRow {
     pub cid: Vec<u8>,
     pub size: i64,
-    pub mimetype: String,
+    pub mimetype: Option<String>,
 }
 
 #[derive(Debug)]

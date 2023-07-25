@@ -69,6 +69,12 @@ impl Control for IControl {
             fh.write_all(data)?;
         }
 
+        let len = fh.metadata()?.len();
+
+        if len == 0 {
+            return Err(Status::invalid_argument("Empty file"))
+        }
+
         let cid = hooya::cid::wrap_digest(sha_context.finish())
             .map_err(|e| Status::internal(e.to_string()))?;
         let cid_store_path = runtime.derive_store_path(&cid).unwrap();
