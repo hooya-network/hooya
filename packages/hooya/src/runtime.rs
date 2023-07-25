@@ -133,4 +133,26 @@ impl Runtime {
 
         Ok(files)
     }
+
+    pub async fn local_file_page(
+        &self,
+        page_size: u32,
+        page_token: String,
+        oldest_first: bool,
+    ) -> Result<(Vec<crate::proto::File>, String)> {
+        let offset: u32 = page_token.parse()?;
+        let files = self
+            .db
+            .file_page(page_size, offset, oldest_first)
+            .await?
+            .into_iter()
+            .map(|f| crate::proto::File {
+                cid: f.cid,
+                mimetype: f.mimetype,
+                size: f.size,
+            })
+            .collect();
+
+        Ok((files, (offset + page_size).to_string()))
+    }
 }

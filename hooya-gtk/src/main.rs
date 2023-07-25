@@ -13,7 +13,7 @@ use gtk::{
     STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::{ContentAtCidRequest, RandomLocalFileRequest, TagsRequest};
+use hooya::proto::{ContentAtCidRequest, LocalFilePageRequest, TagsRequest};
 use mason_grid_layout::MasonGridLayout;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -104,8 +104,11 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
 
             let j_1 = rt.spawn(clone!(@strong data_event_sender => async move {
                 let rand_files = client_1
-                    .random_local_file(RandomLocalFileRequest { count: 20 })
-                    .await
+                    .local_file_page(LocalFilePageRequest {
+                        page_size: 50,
+                        page_token: "0".to_string(),
+                        oldest_first: false,
+                    }).await
                     .unwrap()
                     .into_inner()
                     .file;

@@ -208,6 +208,37 @@ impl Db {
         Ok(file_row)
     }
 
+    pub async fn file_page(
+        &self,
+        count: u32,
+        offset: u32,
+        oldest_first: bool,
+    ) -> Result<Vec<FileRow>> {
+        let query = if oldest_first {
+            "SELECT Cid, Mimetype, Size FROM Files ORDER BY Indexed LIMIT ? OFFSET ?"
+        } else {
+            "SELECT Cid, Mimetype, Size FROM Files ORDER BY Indexed DESC LIMIT ? OFFSET ?"
+        };
+        let file_rows = sqlx::query(query)
+            .bind(count)
+            .bind(offset)
+            .try_map(|r: SqliteRow| {
+                let cid = r.try_get("Cid")?;
+                let mimetype = r.try_get("Mimetype")?;
+                let size = r.try_get("Size")?;
+
+                Ok(FileRow {
+                    cid,
+                    mimetype,
+                    size,
+                })
+            })
+            .fetch_all(&self.executor)
+            .await?;
+
+        Ok(file_rows)
+    }
+
     pub async fn random_file(&self, count: u32) -> Result<Vec<FileRow>> {
         let file_rows = sqlx::query(
             "SELECT Cid, Mimetype, Size FROM Files ORDER BY RANDOM() LIMIT ?",

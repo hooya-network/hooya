@@ -11,6 +11,7 @@ service Control {
     rpc ContentAtCid (ContentAtCidRequest) returns (stream FileChunk);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
     rpc RandomLocalFile (RandomLocalFileRequest) returns (RandomLocalFileReply);
+    rpc LocalFilePage (LocalFilePageRequest) returns (LocalFilePageReply);
 }
 
 message VersionRequest { }
@@ -28,6 +29,17 @@ message RandomLocalFileRequest {
 
 message RandomLocalFileReply {
     repeated File file = 1;
+}
+
+message LocalFilePageRequest {
+    uint32 page_size = 1;
+    string page_token = 2;
+    bool oldest_first = 3;
+}
+
+message LocalFilePageReply {
+    repeated File file = 1;
+    string next_page_token = 2;
 }
 
 message FileChunk {

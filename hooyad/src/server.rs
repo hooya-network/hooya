@@ -4,9 +4,9 @@ use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     ContentAtCidRequest, FileChunk, ForgetFileReply, ForgetFileRequest,
-    RandomLocalFileReply, RandomLocalFileRequest, StreamToFilestoreReply,
-    TagCidReply, TagCidRequest, TagsReply, TagsRequest, VersionReply,
-    VersionRequest,
+    LocalFilePageReply, LocalFilePageRequest, RandomLocalFileReply,
+    RandomLocalFileRequest, StreamToFilestoreReply, TagCidReply, TagCidRequest,
+    TagsReply, TagsRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -142,6 +142,26 @@ impl Control for IControl {
         });
 
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn local_file_page(
+        &self,
+        r: Request<LocalFilePageRequest>,
+    ) -> Result<Response<LocalFilePageReply>, Status> {
+        let req = r.into_inner();
+
+        let (file, next_page_token) = self
+            .runtime
+            .local_file_page(req.page_size, req.page_token, req.oldest_first)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let resp = LocalFilePageReply {
+            file,
+            next_page_token,
+        };
+
+        Ok(Response::new(resp))
     }
 
     async fn random_local_file(
