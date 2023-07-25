@@ -13,8 +13,11 @@ pub async fn stream_file_to_remote_filestore(
     let fh = File::open(local_file)?;
 
     if fh.metadata()?.len() == 0 {
-        println!("Not streaming empty file {}", local_file.file_name().unwrap().to_str().unwrap());
-        return Ok(())
+        println!(
+            "Not streaming empty file {}",
+            local_file.file_name().unwrap().to_str().unwrap()
+        );
+        return Ok(());
     }
 
     let chunks =

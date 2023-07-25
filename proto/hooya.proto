@@ -8,11 +8,13 @@ message Tag {
 
 message File {
     bytes cid = 1;
-    uint32 size = 2;
+    int64 size = 2;
     optional string mimetype = 3;
 }
 
 message Image {
+    int64 height = 1;
+    int64 width = 2;
 }
 
 message Video {

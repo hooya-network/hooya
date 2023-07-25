@@ -16,8 +16,8 @@ impl Runtime {
         let size: i64 =
             fs::metadata(cid_store_path.clone())?.len().try_into()?; // TODO
 
-        let mimetype = infer::get_from_path(&cid_store_path)?
-            .and_then(|i| Some(i.to_string()));
+        let mimetype =
+            infer::get_from_path(&cid_store_path)?.map(|i| i.to_string());
 
         let f = FileRow {
             cid,
@@ -38,10 +38,25 @@ impl Runtime {
         let file = File {
             cid: file_row.cid,
             mimetype: file_row.mimetype,
-            size: file_row.size.try_into()?,
+            size: file_row.size,
         };
 
         Ok(file)
+    }
+
+    pub async fn tags(&self, cid: Vec<u8>) -> Result<Vec<Tag>> {
+        let tags = self
+            .db
+            .file_tags(cid)
+            .await?
+            .iter()
+            .map(|r| Tag {
+                namespace: r.namespace.clone(),
+                descriptor: r.descriptor.clone(),
+            })
+            .collect();
+
+        Ok(tags)
     }
 
     pub async fn tag_cid(&self, cid: Vec<u8>, tags: Vec<Tag>) -> Result<()> {
@@ -100,13 +115,20 @@ impl Runtime {
         Ok(final_dir.join(encoded_cid))
     }
 
-    pub async fn random_local_cid(&self, count: u32) -> Result<Vec<Vec<u8>>> {
+    pub async fn random_local_file(
+        &self,
+        count: u32,
+    ) -> Result<Vec<crate::proto::File>> {
         let files = self
             .db
             .random_file(count)
             .await?
             .into_iter()
-            .map(|f| f.cid)
+            .map(|f| crate::proto::File {
+                cid: f.cid,
+                mimetype: f.mimetype,
+                size: f.size,
+            })
             .collect();
 
         Ok(files)

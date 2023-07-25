@@ -13,7 +13,7 @@ use gtk::{
     STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::{ContentAtCidRequest, RandomLocalCidRequest};
+use hooya::proto::{ContentAtCidRequest, RandomLocalFileRequest, TagsRequest};
 use mason_grid_layout::MasonGridLayout;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -34,16 +34,17 @@ struct IncomingImage {
 }
 
 enum UiEvent {
-    GridItemClicked { cid: Vec<u8> },
+    GridItemClicked { file: hooya::proto::File },
 }
 
 enum DataEvent {
     AppendImageToGrid {
-        cid: Vec<u8>,
+        file: hooya::proto::File,
         stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
     },
     ViewImage {
-        cid: Vec<u8>,
+        file: hooya::proto::File,
+        tags: HashMap<String, Vec<String>>,
         stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
     },
 }
@@ -99,21 +100,21 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
                 ControlClient::connect(endpoint)
                     .await
                     .expect("Connect to hooyad"); // TODO UI for this
-            let client_2 = client_1.clone();
+            let mut client_2 = client_1.clone();
 
             let j_1 = rt.spawn(clone!(@strong data_event_sender => async move {
-                let rand_cids = client_1
-                    .random_local_cid(RandomLocalCidRequest { count: 20 })
+                let rand_files = client_1
+                    .random_local_file(RandomLocalFileRequest { count: 20 })
                     .await
                     .unwrap()
                     .into_inner()
-                    .cid;
+                    .file;
 
-                for cid in rand_cids {
-                    let stream = request_data_at_cid(client_1.clone(), cid.clone())
+                for file in rand_files {
+                    let stream = request_data_at_cid(client_1.clone(), file.cid.clone())
                         .await;
                     data_event_sender
-                        .send(DataEvent::AppendImageToGrid { cid, stream: Box::pin(stream) })
+                        .send(DataEvent::AppendImageToGrid { file, stream: Box::pin(stream) })
                         .await
                         .unwrap();
                 }
@@ -121,12 +122,16 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
             let j_2 = rt.spawn(clone!(@strong data_event_sender => async move {
                 while let Some(event) = ui_event_receiver.recv().await {
                     match event {
-                        UiEvent::GridItemClicked { cid } => {
+                        UiEvent::GridItemClicked { file } => {
+                            let tags_resp = client_2.tags(TagsRequest {
+                                cid: file.cid.clone()
+                                }).await.unwrap().into_inner().tags;
+                            let tags = tags_vec_to_map(tags_resp);
                             let stream = Box::pin(
-                                request_data_at_cid(client_2.clone(), cid.clone())
+                                request_data_at_cid(client_2.clone(), file.cid.clone())
                                 .await);
                             data_event_sender
-                                .send(DataEvent::ViewImage { cid, stream })
+                                .send(DataEvent::ViewImage { file, tags, stream })
                                 .await
                                 .unwrap();
                         }
@@ -228,7 +233,7 @@ fn build_browse_window(
     c.spawn_local(clone!(@weak app => async move {
         while let Some(event) = data_event_receiver.recv().await {
             match event {
-                DataEvent::AppendImageToGrid { cid, mut stream } => {
+                DataEvent::AppendImageToGrid { file, mut stream } => {
                     let pb_loader = PixbufLoader::new();
                     let img = Picture::builder()
                         .content_fit(ContentFit::Fill)
@@ -258,7 +263,7 @@ fn build_browse_window(
                         }
                         if n == 2 {
                             // Double-click
-                            ui_event_sender.send(UiEvent::GridItemClicked { cid: cid.clone() })
+                            ui_event_sender.send(UiEvent::GridItemClicked { file: file.clone() })
                                 .unwrap();
                         }
                     }));
@@ -271,8 +276,8 @@ fn build_browse_window(
                         println!("AERR {}", e)
                     }
                 }
-                DataEvent::ViewImage { cid, stream } => {
-                    build_file_view_window(&app, cid, stream)
+                DataEvent::ViewImage { file, tags, stream } => {
+                    build_file_view_window(&app, file, tags, stream)
                         .await;
                 }
             }
@@ -306,7 +311,8 @@ fn build_footer() -> gtk::Box {
 
 async fn build_file_view_window(
     app: &Application,
-    cid: Vec<u8>,
+    file: hooya::proto::File,
+    tags: HashMap<String, Vec<String>>,
     mut stream: Pin<Box<dyn Stream<Item = IncomingImage> + Send>>,
 ) {
     let window = ApplicationWindow::new(app);
@@ -342,7 +348,7 @@ async fn build_file_view_window(
         .orientation(Orientation::Horizontal)
         .build();
 
-    for (namespace, descriptors) in sample_file_tags() {
+    for (namespace, descriptors) in tags {
         let namespace_box = gtk::Box::builder()
             .halign(Align::Start)
             .orientation(Orientation::Vertical)
@@ -403,14 +409,17 @@ async fn build_file_view_window(
             .build(),
     );
 
-    let sample_props = [
-        ("CID", hooya::cid::encode(cid), true),
-        ("Mimetype", "image/png".to_string(), false),
-        ("Size", "1.3MiB".to_string(), false),
-        ("Dimensions", "1396x2500 (3.7 MPixel)".to_string(), false),
-    ];
+    let mut props = vec![];
+    props.push(("CID", hooya::cid::encode(file.cid.clone()), true));
+    if let Some(m) = file.mimetype {
+        props.push(("Mimetype", m, false));
+    }
+    props.push(("Size", human_readable_size(file.size), false));
 
-    for p in sample_props {
+    // TODO Sample data until I write calculate this info server-side
+    props.push(("Dimensions", "1396x2500 (3.7 MPixel)".to_string(), false));
+
+    for p in props {
         let row = gtk::Box::builder().spacing(10).build();
 
         let label_box = gtk::Box::builder().css_classes(["info-label"]).build();
@@ -553,57 +562,10 @@ async fn build_file_view_window(
 //     ret
 // }
 
-fn sample_file_tags() -> HashMap<String, Vec<String>> {
-    use hooya::proto::Tag;
-
-    vec![
-        Tag {
-            namespace: "artist".to_string(),
-            descriptor: "jitama (bou)".to_string(),
-        },
-        Tag {
-            namespace: "copyright".to_string(),
-            descriptor: "mahoromatic".to_string(),
-        },
-        Tag {
-            namespace: "character".to_string(),
-            descriptor: "andou mahoro".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "1girl".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "on stomach".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "simple background".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "socks".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "maid headdress".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "leg up".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "naked sheet".to_string(),
-        },
-        Tag {
-            namespace: "general".to_string(),
-            descriptor: "long hair".to_string(),
-        },
-    ]
-    .iter()
-    .fold(HashMap::new(), |mut acc, t| {
+fn tags_vec_to_map(
+    tags: Vec<hooya::proto::Tag>,
+) -> HashMap<String, Vec<String>> {
+    tags.iter().fold(HashMap::new(), |mut acc, t| {
         let mut exist_namespace =
             acc.get(&t.namespace).unwrap_or(&vec![]).to_owned();
         exist_namespace.push(t.descriptor.clone());
@@ -741,4 +703,19 @@ fn build_page_nav(curr: u32, max: u32) -> gtk::Box {
     }
 
     ret
+}
+
+fn human_readable_size(size: i64) -> String {
+    const SIZE_TRANSLATION: [(i64, &str); 4] =
+        [(4, "TiB"), (3, "GiB"), (2, "MiB"), (1, "KiB")];
+
+    for (power, label) in SIZE_TRANSLATION {
+        let dividend: i64 = 1 << (10 * power);
+        let div_res = size as f64 / dividend as f64;
+        if div_res.floor() >= 1.0 {
+            return format!("{:.2}{}", div_res, label);
+        }
+    }
+
+    format!("{}B", size)
 }

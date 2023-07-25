@@ -7,9 +7,10 @@ service Control {
     rpc Version (VersionRequest) returns (VersionReply);
     rpc StreamToFilestore (stream FileChunk) returns (StreamToFilestoreReply);
     rpc TagCid (TagCidRequest) returns (TagCidReply);
+    rpc Tags (TagsRequest) returns (TagsReply);
     rpc ContentAtCid (ContentAtCidRequest) returns (stream FileChunk);
     rpc ForgetFile (ForgetFileRequest) returns (ForgetFileReply);
-    rpc RandomLocalCID (RandomLocalCIDRequest) returns (RandomLocalCIDReply);
+    rpc RandomLocalFile (RandomLocalFileRequest) returns (RandomLocalFileReply);
 }
 
 message VersionRequest { }
@@ -21,12 +22,12 @@ message VersionReply {
     string pre_version = 4;
 }
 
-message RandomLocalCIDRequest {
+message RandomLocalFileRequest {
     uint32 count = 1;
 }
 
-message RandomLocalCIDReply {
-    repeated bytes cid = 1;
+message RandomLocalFileReply {
+    repeated File file = 1;
 }
 
 message FileChunk {
@@ -35,6 +36,14 @@ message FileChunk {
 
 message StreamToFilestoreReply {
     bytes cid = 1;
+}
+
+message TagsRequest {
+    bytes cid = 1;
+}
+
+message TagsReply {
+    repeated Tag tags = 1;
 }
 
 message TagCidRequest {

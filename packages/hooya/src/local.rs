@@ -74,6 +74,29 @@ impl Db {
         Ok(())
     }
 
+    pub async fn file_tags(&self, cid: Vec<u8>) -> Result<Vec<TagRow>> {
+        let tag_rows = sqlx::query(
+            "SELECT Id, Namespace, Descriptor FROM Tags, TagMap WHERE
+            FileCid = ? AND TagId = Id",
+        )
+        .bind(cid)
+        .try_map(|r: SqliteRow| {
+            let id = r.try_get("Id")?;
+            let namespace = r.try_get("Namespace")?;
+            let descriptor = r.try_get("Descriptor")?;
+
+            Ok(TagRow {
+                id,
+                namespace,
+                descriptor,
+            })
+        })
+        .fetch_all(&self.executor)
+        .await?;
+
+        Ok(tag_rows)
+    }
+
     pub async fn new_file(&self, f: FileRow) -> sqlx::Result<()> {
         sqlx::query(
             r#"

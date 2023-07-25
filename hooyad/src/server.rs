@@ -4,8 +4,9 @@ use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     ContentAtCidRequest, FileChunk, ForgetFileReply, ForgetFileRequest,
-    RandomLocalCidReply, RandomLocalCidRequest, StreamToFilestoreReply,
-    TagCidReply, TagCidRequest, VersionReply, VersionRequest,
+    RandomLocalFileReply, RandomLocalFileRequest, StreamToFilestoreReply,
+    TagCidReply, TagCidRequest, TagsReply, TagsRequest, VersionReply,
+    VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -72,7 +73,7 @@ impl Control for IControl {
         let len = fh.metadata()?.len();
 
         if len == 0 {
-            return Err(Status::invalid_argument("Empty file"))
+            return Err(Status::invalid_argument("Empty file"));
         }
 
         let cid = hooya::cid::wrap_digest(sha_context.finish())
@@ -137,28 +138,49 @@ impl Control for IControl {
         let chunks = hooya::ChunkedReader::new(fh);
         let stream = tokio_stream::iter(chunks).map(move |c| {
             let data = c?;
-            println!("{}", hooya::cid::encode(cid.clone()));
             Ok(FileChunk { data })
         });
 
         Ok(Response::new(Box::pin(stream)))
     }
 
-    async fn random_local_cid(
+    async fn random_local_file(
         &self,
-        r: Request<RandomLocalCidRequest>,
-    ) -> Result<Response<RandomLocalCidReply>, Status> {
+        r: Request<RandomLocalFileRequest>,
+    ) -> Result<Response<RandomLocalFileReply>, Status> {
         let req = r.into_inner();
 
-        let cid = self
+        let file = self
             .runtime
-            .random_local_cid(req.count)
+            .random_local_file(req.count)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let resp = RandomLocalCidReply { cid };
+        let resp = RandomLocalFileReply { file };
 
         Ok(Response::new(resp))
+    }
+
+    async fn tags(
+        &self,
+        r: Request<TagsRequest>,
+    ) -> Result<Response<TagsReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
+
+        // Check that the CID is actually indexed before tagging it
+        runtime.indexed_file(req.cid.clone()).await.map_err(|_| {
+            Status::internal("CID is not indexed so it cannot be tagged")
+        })?;
+
+        let tags = runtime
+            .tags(req.cid)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let reply = TagsReply { tags };
+
+        Ok(Response::new(reply))
     }
 
     async fn forget_file(
