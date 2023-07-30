@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::{command, value_parser, Arg, ArgAction, Command};
 use dotenv::dotenv;
-use hooya::proto::{control_client::ControlClient, TagCidRequest, ContentAtCidRequest};
-use std::path::PathBuf;
+use hooya::proto::{
+    control_client::ControlClient, ContentAtCidRequest, TagCidRequest,
+};
+use std::path::{Path, PathBuf};
 mod config;
 
 #[tokio::main]
@@ -17,11 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
         )
         .subcommand(
-            Command::new("add").arg(
-                Arg::new("files")
-                    .action(ArgAction::Append)
-                    .value_parser(value_parser!(PathBuf)),
-            ),
+            Command::new("add")
+                .arg(
+                    Arg::new("just-hash")
+                        .action(ArgAction::SetTrue)
+                        .long("just-hash"),
+                )
+                .arg(
+                    Arg::new("files")
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(PathBuf)),
+                ),
         )
         .subcommand(
             Command::new("add-dir").arg(
@@ -38,9 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_parser(value_parser!(hooya::proto::Tag)),
             ),
         )
-        .subcommand(
-            Command::new("dl").arg(Arg::new("cid").required(true))
-        )
+        .subcommand(Command::new("dl").arg(Arg::new("cid").required(true)))
         .get_matches();
 
     let mut client = ControlClient::connect(format!(
@@ -51,11 +57,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match matches.subcommand() {
         Some(("add", sub_matches)) => {
+            use std::fs::File;
+            let just_hash = sub_matches.get_one::<bool>("just-hash");
             let files = sub_matches
                 .get_many::<PathBuf>("files")
                 .unwrap_or_default()
                 .collect::<Vec<_>>();
+
             for f in &files {
+                if let Some(just_hash) = just_hash {
+                    if *just_hash {
+                        let fh = File::open(f)?;
+                        let chunks = hooya::ChunkedReader::new(fh);
+                        let mut sha_context = hooya::cid::new_digest_context();
+
+                        for c in chunks {
+                            sha_context.update(&c?);
+                        }
+                        let digest =
+                            hooya::cid::wrap_digest(sha_context.finish())?;
+                        println!(
+                            "hashed {} {}",
+                            hooya::cid::encode(digest),
+                            Path::new(f).file_name().unwrap().to_str().unwrap()
+                        );
+                        continue;
+                    }
+                }
                 hooya::client::stream_file_to_remote_filestore(
                     client.clone(),
                     f,
@@ -92,13 +120,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
             let (_, cid) = hooya::cid::decode(encoded_cid)?;
-            let mut chunk_stream = client.content_at_cid(ContentAtCidRequest { cid }).await?.into_inner();
+            let mut chunk_stream = client
+                .content_at_cid(ContentAtCidRequest { cid })
+                .await?
+                .into_inner();
 
             // For now just write to a file in the current path
             let mut file = File::create(encoded_cid)?;
 
             while let Some(m) = chunk_stream.message().await? {
-                file.write(&m.data)?;
+                file.write_all(&m.data)?;
             }
         }
         _ => unreachable!("Exhausted list of subcommands"),
