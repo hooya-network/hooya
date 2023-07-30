@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{command, value_parser, Arg, ArgAction, Command};
 use dotenv::dotenv;
-use hooya::proto::{control_client::ControlClient, TagCidRequest};
+use hooya::proto::{control_client::ControlClient, TagCidRequest, ContentAtCidRequest};
 use std::path::PathBuf;
 mod config;
 
@@ -37,6 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .required(true)
                     .value_parser(value_parser!(hooya::proto::Tag)),
             ),
+        )
+        .subcommand(
+            Command::new("dl").arg(Arg::new("cid").required(true))
         )
         .get_matches();
 
@@ -82,6 +85,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .collect();
             client.tag_cid(TagCidRequest { cid, tags }).await?;
+        }
+        Some(("dl", sub_matches)) => {
+            use std::fs::File;
+            use std::io::Write;
+
+            let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
+            let (_, cid) = hooya::cid::decode(encoded_cid)?;
+            let mut chunk_stream = client.content_at_cid(ContentAtCidRequest { cid }).await?.into_inner();
+
+            // For now just write to a file in the current path
+            let mut file = File::create(encoded_cid)?;
+
+            while let Some(m) = chunk_stream.message().await? {
+                file.write(&m.data)?;
+            }
         }
         _ => unreachable!("Exhausted list of subcommands"),
     }
