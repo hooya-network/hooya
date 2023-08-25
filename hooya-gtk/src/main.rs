@@ -388,6 +388,11 @@ async fn build_file_view_window(
         tags_box.append(&namespace_box);
     }
 
+    let new_tag_box = gtk::Box::builder().build();
+    let new_tag_button = gtk::Button::builder().label("Edit tags").build();
+    new_tag_box.append(&new_tag_button);
+    tags_box.append(&new_tag_box);
+
     let net_info_box = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .build();
