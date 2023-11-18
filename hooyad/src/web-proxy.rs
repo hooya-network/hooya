@@ -19,6 +19,8 @@ struct AState {
     client: ControlClient<Channel>,
 }
 
+pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -33,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("proxy-endpoint")
                 .long("proxy-endpoint")
                 .env("HOOYA_WEB_PROXY_ENDPOINT")
-                .default_value(config::DEFAULT_HOOYA_WEB_PROXY_ENDPOINT),
+                .default_value(DEFAULT_HOOYA_WEB_PROXY_ENDPOINT),
         )
         .get_matches();
 

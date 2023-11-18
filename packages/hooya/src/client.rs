@@ -10,7 +10,7 @@ pub async fn stream_file_to_remote_filestore(
     mut client: ControlClient<Channel>,
     local_file: &Path,
     unlink: bool,
-    init_tags: Vec<crate::proto::Tag>
+    init_tags: Vec<crate::proto::Tag>,
 ) -> Result<()> {
     {
         let fh = File::open(local_file)?;
@@ -30,10 +30,12 @@ pub async fn stream_file_to_remote_filestore(
             .await
             .map_err(anyhow::Error::new)?;
         let cid = resp.into_inner().cid;
-        client.tag_cid(crate::proto::TagCidRequest {
-            cid: cid.clone(),
-            tags: init_tags
-        }).await?;
+        client
+            .tag_cid(crate::proto::TagCidRequest {
+                cid: cid.clone(),
+                tags: init_tags,
+            })
+            .await?;
 
         println!(
             "added {} {}",
@@ -53,18 +55,28 @@ pub fn stream_dir_to_remote_filestore(
     client: ControlClient<Channel>,
     local_dir: &Path,
     unlink: bool,
-    init_tags: Vec<crate::proto::Tag>
+    init_tags: Vec<crate::proto::Tag>,
 ) -> BoxFuture<Result<()>> {
     Box::pin(async move {
         for entry in std::fs::read_dir(local_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                stream_dir_to_remote_filestore(client.clone(), &path, unlink, init_tags.clone())
-                    .await?;
+                stream_dir_to_remote_filestore(
+                    client.clone(),
+                    &path,
+                    unlink,
+                    init_tags.clone(),
+                )
+                .await?;
             } else {
-                stream_file_to_remote_filestore(client.clone(), &path, unlink, init_tags.clone())
-                    .await?;
+                stream_file_to_remote_filestore(
+                    client.clone(),
+                    &path,
+                    unlink,
+                    init_tags.clone(),
+                )
+                .await?;
             }
         }
         Ok(())

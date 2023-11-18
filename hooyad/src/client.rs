@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Arg::new("init-tag")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(hooya::proto::Tag))
-                        .long("init-tag")
+                        .long("init-tag"),
                 )
                 .arg(
                     Arg::new("files")
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Arg::new("init-tag")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(hooya::proto::Tag))
-                        .long("init-tag")
+                        .long("init-tag"),
                 )
                 .arg(
                     Arg::new("dirs")
@@ -85,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *sub_matches.get_one::<bool>("just-hash").unwrap_or(&false);
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
-            let init_tags: Vec<hooya::proto::Tag> = sub_matches.get_many::<hooya::proto::Tag>("init-tag")
+            let init_tags: Vec<hooya::proto::Tag> = sub_matches
+                .get_many::<hooya::proto::Tag>("init-tag")
                 .unwrap_or_default()
                 .cloned()
                 .collect();
@@ -128,7 +129,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
 
-            let init_tags: Vec<hooya::proto::Tag> = sub_matches.get_many::<hooya::proto::Tag>("init-tag")
+            let init_tags: Vec<hooya::proto::Tag> = sub_matches
+                .get_many::<hooya::proto::Tag>("init-tag")
                 .unwrap_or_default()
                 .cloned()
                 .collect();

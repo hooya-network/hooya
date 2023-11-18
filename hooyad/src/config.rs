@@ -1,2 +1,1 @@
 pub const DEFAULT_HOOYAD_ENDPOINT: &str = "127.0.0.1:8531";
-pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
