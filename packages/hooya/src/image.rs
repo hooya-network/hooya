@@ -10,13 +10,12 @@ pub fn thumbnail(
     out_file: &PathBuf,
     mimetype: &str,
     long_edge: u32,
-) -> Result<()> {
-    let decoded = read(local_file, mimetype)?;
-    decoded
-        .thumbnail(long_edge, long_edge)
-        .save_with_format(out_file, ImageFormat::Jpeg)?;
+) -> Result<(u32, u32)> {
+    let mut decoded = read(local_file, mimetype)?;
+    decoded = decoded.thumbnail(long_edge, long_edge);
+    decoded.save_with_format(out_file, ImageFormat::Jpeg)?;
 
-    Ok(())
+    Ok((decoded.height(), decoded.width()))
 }
 
 pub fn read(local_file: &PathBuf, mimetype: &str) -> Result<DynamicImage> {

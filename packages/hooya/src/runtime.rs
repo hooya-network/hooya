@@ -219,7 +219,7 @@ impl Runtime {
                 std::fs::create_dir_all(parent)?;
             }
 
-            crate::image::thumbnail(
+            let (thumb_height, thumb_width) = crate::image::thumbnail(
                 &cid_store_path,
                 &thumb_store_path,
                 mimetype,
@@ -227,7 +227,7 @@ impl Runtime {
             )?;
 
             let fh = std::fs::File::open(thumb_store_path)?;
-            let size = fh.metadata()?.len().try_into().unwrap();
+            let size = fh.metadata()?.len().try_into().unwrap(); // TODO
 
             let chunks = crate::ChunkedReader::new(fh);
             let mut sha_context = crate::cid::new_digest_context();
@@ -245,8 +245,8 @@ impl Runtime {
                     mimetype: mimetype.to_string(),
                     source_cid: cid.clone(),
                     ratio: f64::from(img_width) / f64::from(img_height),
-                    height: img_height.into(),
-                    width: img_width.into(),
+                    height: thumb_height.into(),
+                    width: thumb_width.into(),
                     is_animated: false,
                 })
                 .await?;
