@@ -103,8 +103,8 @@ impl Runtime {
             return Err(anyhow::anyhow!("Unable to derive path for empty CID"));
         }
 
-        let prefix = if encoded_cid.len() >= 6 {
-            &encoded_cid[encoded_cid.len() - 6..]
+        let prefix = if encoded_cid.len() >= 11 {
+            &encoded_cid[..11]
         } else {
             &encoded_cid
         };
@@ -125,8 +125,8 @@ impl Runtime {
             return Err(anyhow::anyhow!("Unable to derive path for empty CID"));
         }
 
-        let prefix = if encoded_cid.len() >= 6 {
-            &encoded_cid[encoded_cid.len() - 6..]
+        let prefix = if encoded_cid.len() >= 11 {
+            &encoded_cid[..11]
         } else {
             &encoded_cid
         };
