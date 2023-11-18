@@ -38,7 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .subcommand(
             Command::new("add-dir")
-                .arg(Arg::new("unlink").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("unlink")
+                        .action(ArgAction::SetTrue)
+                        .long("unlink"),
+                )
                 .arg(
                     Arg::new("dirs")
                         .action(ArgAction::Append)
