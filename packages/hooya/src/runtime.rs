@@ -26,7 +26,15 @@ impl Runtime {
         };
 
         self.db.new_file(f).await?;
-        self.import_image(cid, &mimetype.unwrap()).await?;
+
+        // Extract additional detail about the file given its type
+        if let Some(inferred_mimetype) = inferred {
+            match inferred_mimetype.matcher_type() {
+                infer::MatcherType::Image =>
+                    self.import_image(cid, &mimetype.unwrap()).await?,
+                _ => {},
+            }
+        }
 
         Ok(())
     }
@@ -203,7 +211,7 @@ impl Runtime {
             .await?;
 
         // Thumbnail sizes to generate
-        let t_sizes_long_edge = vec![320, 640, 960, 1280, 1920];
+        let t_sizes_long_edge = vec![320, 640, 1280];
 
         // Read file and thumbnail for every size listed
         for t_size_long_edge in t_sizes_long_edge {

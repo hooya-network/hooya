@@ -31,6 +31,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .long("unlink"),
                 )
                 .arg(
+                    Arg::new("init-tag")
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(hooya::proto::Tag))
+                        .long("init-tag")
+                )
+                .arg(
                     Arg::new("files")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(PathBuf)),
@@ -42,6 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Arg::new("unlink")
                         .action(ArgAction::SetTrue)
                         .long("unlink"),
+                )
+                .arg(
+                    Arg::new("init-tag")
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(hooya::proto::Tag))
+                        .long("init-tag")
                 )
                 .arg(
                     Arg::new("dirs")
@@ -73,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *sub_matches.get_one::<bool>("just-hash").unwrap_or(&false);
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
+            let init_tags: Vec<hooya::proto::Tag> = sub_matches.get_many::<hooya::proto::Tag>("init-tag")
+                .unwrap_or_default()
+                .cloned()
+                .collect();
             let files = sub_matches
                 .get_many::<PathBuf>("files")
                 .unwrap_or_default()
@@ -99,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     client.clone(),
                     f,
                     unlink,
+                    init_tags.clone(),
                 )
                 .await?;
             }
@@ -110,11 +127,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<Vec<_>>();
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
+
+            let init_tags: Vec<hooya::proto::Tag> = sub_matches.get_many::<hooya::proto::Tag>("init-tag")
+                .unwrap_or_default()
+                .cloned()
+                .collect();
+
             for d in &dirs {
                 hooya::client::stream_dir_to_remote_filestore(
                     client.clone(),
                     d,
                     unlink,
+                    init_tags.clone(),
                 )
                 .await?;
             }
