@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AState {
         client: ControlClient::connect(format!(
             "http://{}",
-            matches.get_one::<String>("endpoint").unwrap()
+            matches.get_one::<String>("hooyad-endpoint").unwrap()
         ))
         .await?,
     };
