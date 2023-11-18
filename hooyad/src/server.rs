@@ -3,10 +3,11 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    ContentAtCidRequest, FileChunk, ForgetFileReply, ForgetFileRequest,
-    LocalFilePageReply, LocalFilePageRequest, RandomLocalFileReply,
-    RandomLocalFileRequest, StreamToFilestoreReply, TagCidReply, TagCidRequest,
-    TagsReply, TagsRequest, VersionReply, VersionRequest,
+    CidInfoReply, CidInfoRequest, ContentAtCidRequest, FileChunk,
+    ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
+    LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
+    StreamToFilestoreReply, TagCidReply, TagCidRequest, TagsReply, TagsRequest,
+    VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -210,6 +211,19 @@ impl Control for IControl {
         let reply = ForgetFileReply {};
 
         Ok(Response::new(reply))
+    }
+
+    async fn cid_info(
+        &self,
+        r: Request<CidInfoRequest>,
+    ) -> Result<Response<CidInfoReply>, Status> {
+        let req = r.into_inner();
+        let file =
+            Some(self.runtime.indexed_file(req.cid).await.map_err(|_| {
+                Status::internal("CID is not indexed so it cannot be tagged")
+            })?);
+
+        Ok(Response::new(CidInfoReply { file }))
     }
 }
 

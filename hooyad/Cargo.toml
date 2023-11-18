@@ -12,8 +12,13 @@ path = "src/client.rs"
 name = "hooyad"
 path = "src/server.rs"
 
+[[bin]]
+name = "hooya-web-proxy"
+path = "src/web-proxy.rs"
+
 [dependencies]
 tonic = { version = "0.9" }
+axum = { version = "0.6.20" }
 prost = { version = "0.11" }
 tokio = { version = "1.0", features = [ "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1" }
