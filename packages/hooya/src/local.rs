@@ -25,6 +25,26 @@ pub struct TagMapRow {
     pub reason: u32,
 }
 
+pub struct ImageRow {
+    pub cid: Vec<u8>,
+    pub height: u32,
+    pub width: u32,
+    pub ratio: f64,
+    pub primary_color: Vec<u8>,
+    pub colors: Vec<u8>,
+}
+
+pub struct ThumbnailRow {
+    pub cid: Vec<u8>,
+    pub size: i64,
+    pub mimetype: String,
+    pub source_cid: Vec<u8>,
+    pub height: i64,
+    pub width: i64,
+    pub ratio: f64,
+    pub is_animated: bool,
+}
+
 pub struct Db {
     executor: SqlitePool,
 }
@@ -68,6 +88,36 @@ impl Db {
             UNIQUE(FileCid, TagId),
             FOREIGN KEY (FileCid) REFERENCES Files(Cid) ON DELETE CASCADE,
             FOREIGN KEY (TagId) REFERENCES Tags(Id) ON DELETE CASCADE)"#,
+            )
+            .await?;
+
+        self.executor
+            .execute(
+                r#"
+            CREATE TABLE IF NOT EXISTS Images (
+            Cid VARBINARY NOT NULL PRIMARY KEY,
+            Height INTEGER UNSIGNED NOT NULL,
+            Width INTEGER UNSIGNED NOT NULL,
+            Ratio REAL NOT NULL,
+            PrimaryColor BINARY(3) DEFAULT NULL,
+            Colors VARBINARY DEFAULT NULL,
+            FOREIGN KEY (Cid) REFERENCES Files(Cid) ON DELETE CASCADE)"#,
+            )
+            .await?;
+
+        self.executor
+            .execute(
+                r#"
+            CREATE TABLE IF NOT EXISTS Thumbnails (
+            Cid VARBINARY NOT NULL PRIMARY KEY,
+            Size UNSIGNED BIGINT,
+            Mimetype TEXT,
+            SourceCid VARBINARY NOT NULL,
+            Height INTEGER UNSIGNED NOT NULL,
+            Width INTEGER UNSIGNED NOT NULL,
+            Ratio REAL NOT NULL,
+            IsAnimated BOOLEAN DEFAULT FALSE NOT NULL,
+            FOREIGN KEY (SourceCid) REFERENCES Files(Cid) ON DELETE CASCADE)"#,
             )
             .await?;
 
@@ -143,6 +193,42 @@ impl Db {
             .await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn new_thumbnail(&self, thumbnail: ThumbnailRow) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO Thumbnails (Cid, Size, Mimetype, SourceCid, Height, Width, Ratio, IsAnimated) VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(thumbnail.cid)
+        .bind(thumbnail.size)
+        .bind(thumbnail.mimetype)
+        .bind(thumbnail.source_cid)
+        .bind(thumbnail.height)
+        .bind(thumbnail.width)
+        .bind(thumbnail.ratio)
+        .bind(thumbnail.is_animated)
+        .execute(&self.executor)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn new_image(&self, image: ImageRow) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO Images (Cid, Height, Width, Ratio, PrimaryColor, Colors) VALUES
+            (?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(image.cid)
+        .bind(image.height)
+        .bind(image.width)
+        .bind(image.ratio)
+        .bind(image.primary_color)
+        .bind(image.colors)
+        .execute(&self.executor)
+        .await?;
         Ok(())
     }
 
