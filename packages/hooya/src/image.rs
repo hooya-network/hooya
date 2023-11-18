@@ -6,13 +6,11 @@ use image::io::Reader as ImageReader;
 use image::{DynamicImage, ImageFormat};
 
 pub fn thumbnail(
-    local_file: &PathBuf,
+    in_image: &DynamicImage,
     out_file: &PathBuf,
-    mimetype: &str,
     long_edge: u32,
 ) -> Result<(u32, u32)> {
-    let mut decoded = read(local_file, mimetype)?;
-    decoded = decoded.thumbnail(long_edge, long_edge);
+    let decoded = in_image.thumbnail(long_edge, long_edge);
     decoded.save_with_format(out_file, ImageFormat::Jpeg)?;
 
     Ok((decoded.height(), decoded.width()))

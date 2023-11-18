@@ -220,9 +220,8 @@ impl Runtime {
             }
 
             let (thumb_height, thumb_width) = crate::image::thumbnail(
-                &cid_store_path,
+                &decoded_image,
                 &thumb_store_path,
-                mimetype,
                 t_size_long_edge,
             )?;
 
