@@ -73,7 +73,13 @@ async fn cid_content(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
 
     let mut client = state.client;
     let mut chunk_stream = client
@@ -130,7 +136,13 @@ async fn cid_thumbnail_medium(
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
-    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
 
     let mut client = state.client;
 
@@ -208,7 +220,13 @@ async fn cid_thumbnail_small(
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
-    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
 
     let mut client = state.client;
 
@@ -286,7 +304,13 @@ async fn cid_thumbnail(
     Path((encoded_cid, long_edge)): Path<(String, u32)>,
 ) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
-    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
 
     let mut client = state.client;
 
@@ -367,7 +391,6 @@ async fn cid_thumbnail(
 }
 
 fn closest_thumbnail(thumbnails: &[Thumbnail], long_edge: i64) -> &Thumbnail {
-    println!("{:#?}", thumbnails);
     thumbnails
         .iter()
         .max_by(|x, y| {
