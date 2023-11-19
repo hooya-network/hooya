@@ -10,7 +10,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_client::ControlClient, CidInfoRequest, CidThumbnailRequest,
-    ContentAtCidRequest,
+    ContentAtCidRequest, Thumbnail,
 };
 use tonic::transport::Channel;
 mod config;
@@ -50,6 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/cid-content/:cid", get(cid_content))
+        .route("/cid-thumbnail/:cid/medium", get(cid_thumbnail_medium))
+        .route("/cid-thumbnail/:cid/small", get(cid_thumbnail_small))
         .route("/cid-thumbnail/:cid/:long_edge", get(cid_thumbnail))
         .with_state(state);
 
@@ -119,6 +121,162 @@ async fn cid_content(
             );
         }
     }
+
+    (headers, body).into_response()
+}
+
+async fn cid_thumbnail_medium(
+    State(state): State<AState>,
+    Path(encoded_cid): Path<String>,
+) -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+
+    let mut client = state.client;
+
+    let file_info = client
+        .cid_info(CidInfoRequest { cid: cid.clone() })
+        .await
+        .unwrap()
+        .into_inner()
+        .file
+        .unwrap();
+
+    let ext_file = match file_info.ext_file {
+        Some(ext_file) => ext_file,
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "No such CID indexed")
+                .into_response()
+        }
+    };
+
+    let thumbs = match ext_file {
+        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+    };
+
+    let thumbnail = closest_thumbnail(&thumbs, 1280);
+    let long_edge = if thumbnail.width > thumbnail.height {
+        thumbnail.width
+    } else {
+        thumbnail.height
+    }
+    .try_into()
+    .unwrap();
+
+    let mut chunk_stream = client
+        .cid_thumbnail(CidThumbnailRequest {
+            source_cid: cid,
+            long_edge,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut body = vec![];
+    while let Some(mut m) = chunk_stream.message().await.unwrap() {
+        // TODO Stream body
+        body.append(&mut m.data);
+    }
+
+    headers.append(
+        axum::http::header::CACHE_CONTROL,
+        "max-age=31536000, immutable".parse().unwrap(),
+    );
+    headers.append(axum::http::header::CONTENT_LENGTH, thumbnail.size.into());
+
+    headers.append(
+        axum::http::header::CONTENT_TYPE,
+        thumbnail.mimetype.parse().unwrap(),
+    );
+
+    let save_extension = mimetype_extension(&thumbnail.mimetype).unwrap();
+    headers.append(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!(
+            "inline; filename=\"{}_thumb{}.{}\"",
+            encoded_cid, long_edge, save_extension
+        )
+        .parse()
+        .unwrap(),
+    );
+
+    (headers, body).into_response()
+}
+
+async fn cid_thumbnail_small(
+    State(state): State<AState>,
+    Path(encoded_cid): Path<String>,
+) -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    let (_, cid) = hooya::cid::decode(&encoded_cid).unwrap();
+
+    let mut client = state.client;
+
+    let file_info = client
+        .cid_info(CidInfoRequest { cid: cid.clone() })
+        .await
+        .unwrap()
+        .into_inner()
+        .file
+        .unwrap();
+
+    let ext_file = match file_info.ext_file {
+        Some(ext_file) => ext_file,
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "No such CID indexed")
+                .into_response()
+        }
+    };
+
+    let thumbs = match ext_file {
+        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+    };
+
+    let thumbnail = closest_thumbnail(&thumbs, 640);
+    let long_edge = if thumbnail.width > thumbnail.height {
+        thumbnail.width
+    } else {
+        thumbnail.height
+    }
+    .try_into()
+    .unwrap();
+
+    let mut chunk_stream = client
+        .cid_thumbnail(CidThumbnailRequest {
+            source_cid: cid,
+            long_edge,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut body = vec![];
+    while let Some(mut m) = chunk_stream.message().await.unwrap() {
+        // TODO Stream body
+        body.append(&mut m.data);
+    }
+
+    headers.append(
+        axum::http::header::CACHE_CONTROL,
+        "max-age=31536000, immutable".parse().unwrap(),
+    );
+    headers.append(axum::http::header::CONTENT_LENGTH, thumbnail.size.into());
+
+    headers.append(
+        axum::http::header::CONTENT_TYPE,
+        thumbnail.mimetype.parse().unwrap(),
+    );
+
+    let save_extension = mimetype_extension(&thumbnail.mimetype).unwrap();
+    headers.append(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!(
+            "inline; filename=\"{}_thumb{}.{}\"",
+            encoded_cid, long_edge, save_extension
+        )
+        .parse()
+        .unwrap(),
+    );
 
     (headers, body).into_response()
 }
@@ -206,6 +364,21 @@ async fn cid_thumbnail(
     );
 
     (headers, body).into_response()
+}
+
+fn closest_thumbnail(thumbnails: &[Thumbnail], long_edge: i64) -> &Thumbnail {
+    println!("{:#?}", thumbnails);
+    thumbnails
+        .iter()
+        .max_by(|x, y| {
+            if x.width > x.height {
+                ((y.width - long_edge).abs()).cmp(&(x.width - long_edge).abs())
+            } else {
+                ((y.height - long_edge).abs())
+                    .cmp(&(x.height - long_edge).abs())
+            }
+        })
+        .unwrap()
 }
 
 fn mimetype_extension(mimetype: &str) -> Option<String> {
