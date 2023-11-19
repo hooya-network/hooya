@@ -294,6 +294,66 @@ impl Db {
         Ok(file_row)
     }
 
+    pub async fn image_row(&self, cid: Vec<u8>) -> Result<ImageRow> {
+        let row =
+            sqlx::query("SELECT Cid, Height, Width, Ratio, PrimaryColor, Colors FROM Images WHERE Cid=?")
+                .bind(cid)
+                .try_map(|r: SqliteRow| {
+                    let cid = r.try_get("Cid")?;
+                    let height = r.try_get("Height")?;
+                    let width = r.try_get("Width")?;
+                    let ratio = r.try_get("Ratio")?;
+                    let primary_color = r.try_get("PrimaryColor")?;
+                    let colors = r.try_get("Colors")?;
+
+                    Ok(ImageRow {
+                        cid,
+                        height,
+                        width,
+                        ratio,
+                        primary_color,
+                        colors,
+                    })
+                })
+                .fetch_one(&self.executor)
+                .await?;
+
+        Ok(row)
+    }
+
+    pub async fn thumbnails_by_source_cid(
+        &self,
+        cid: Vec<u8>,
+    ) -> Result<Vec<ThumbnailRow>> {
+        let thumbnail_rows = sqlx::query("SELECT Cid, Size, Mimetype, SourceCid, Height, Width, Ratio, IsAnimated FROM Thumbnails WHERE SourceCid=?")
+            .bind(cid)
+            .try_map(|r: SqliteRow| {
+                let cid = r.try_get("Cid")?;
+                let size = r.try_get("Size")?;
+                let mimetype = r.try_get("Mimetype")?;
+                let source_cid = r.try_get("SourceCid")?;
+                let height = r.try_get("Height")?;
+                let width = r.try_get("Width")?;
+                let ratio = r.try_get("Ratio")?;
+                let is_animated = r.try_get("IsAnimated")?;
+
+                Ok(ThumbnailRow {
+                    cid,
+                    size,
+                    mimetype,
+                    source_cid,
+                    height,
+                    width,
+                    ratio,
+                    is_animated,
+                })
+            })
+            .fetch_all(&self.executor)
+            .await?;
+
+        Ok(thumbnail_rows)
+    }
+
     pub async fn file_page(
         &self,
         count: u32,

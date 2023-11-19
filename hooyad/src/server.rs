@@ -3,8 +3,8 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    CidInfoReply, CidInfoRequest, ContentAtCidRequest, FileChunk,
-    ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
+    CidInfoReply, CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
+    FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
     LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
     StreamToFilestoreReply, TagCidReply, TagCidRequest, TagsReply, TagsRequest,
     VersionReply, VersionRequest,
@@ -145,6 +145,31 @@ impl Control for IControl {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    type CidThumbnailStream =
+        Pin<Box<dyn Stream<Item = Result<FileChunk, Status>> + Send + 'static>>;
+    async fn cid_thumbnail(
+        &self,
+        r: Request<CidThumbnailRequest>,
+    ) -> Result<Response<Self::CidThumbnailStream>, Status> {
+        let req = r.into_inner();
+
+        // NOTE this is safe because we are in charge of encoding the binary
+        // data and the set of characters in base32 cannot be used for
+        // malicious dir traversal
+        let local_file = self
+            .runtime
+            .derive_thumb_path(&req.source_cid, req.long_edge)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let fh = File::open(local_file)?;
+
+        let chunks = hooya::ChunkedReader::new(fh);
+        let stream = tokio_stream::iter(chunks).map(move |c| {
+            let data = c?;
+            Ok(FileChunk { data })
+        });
+
+        Ok(Response::new(Box::pin(stream)))
+    }
     async fn local_file_page(
         &self,
         r: Request<LocalFilePageRequest>,

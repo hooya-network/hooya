@@ -1,5 +1,5 @@
 use crate::local::{self, FileRow, ImageRow, TagMapRow, ThumbnailRow};
-use crate::proto::{File, Tag};
+use crate::proto::{File, Tag, Thumbnail};
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
@@ -42,7 +42,12 @@ impl Runtime {
     }
 
     pub async fn indexed_file(&self, cid: Vec<u8>) -> Result<File> {
-        let file_row = self.db.file_row(cid).await?;
+        let file_row = self.db.file_row(cid.clone()).await?;
+        let ext_file = if let Some(mimetype) = file_row.mimetype.clone() {
+            self.ext_file_info(cid, &mimetype).await?
+        } else {
+            None
+        };
 
         // The reason for this cute misdirection is that indexed (ie local)
         // File may not always map 1-to-1 with the concept of Files on the network
@@ -50,6 +55,7 @@ impl Runtime {
             cid: file_row.cid,
             mimetype: file_row.mimetype,
             size: file_row.size,
+            ext_file,
         };
 
         Ok(file)
@@ -163,6 +169,7 @@ impl Runtime {
                 cid: f.cid,
                 mimetype: f.mimetype,
                 size: f.size,
+                ext_file: None, // TODO INNER JOIN
             })
             .collect();
 
@@ -185,6 +192,7 @@ impl Runtime {
                 cid: f.cid,
                 mimetype: f.mimetype,
                 size: f.size,
+                ext_file: None, // TODO INNER JOIN
             })
             .collect();
 
@@ -262,5 +270,46 @@ impl Runtime {
         }
 
         Ok(())
+    }
+
+    pub async fn ext_file_info(
+        &self,
+        cid: Vec<u8>,
+        mimetype: &str,
+    ) -> Result<Option<crate::proto::file::ExtFile>> {
+        let ret = if mimetype.starts_with("image") {
+            let image_row = self.db.image_row(cid.clone()).await?;
+
+            let colors: Vec<Vec<u8>> =
+                image_row.colors.chunks(3).map(|s| s.into()).collect();
+            let thumbnails = self
+                .db
+                .thumbnails_by_source_cid(cid)
+                .await?
+                .iter()
+                .map(|t| Thumbnail {
+                    cid: t.cid.clone(),
+                    size: t.size,
+                    mimetype: t.mimetype.clone(),
+                    source_cid: t.source_cid.clone(),
+                    height: t.height,
+                    width: t.width,
+                    aspect_ratio: t.ratio as f32,
+                    is_animated: t.is_animated,
+                })
+                .collect();
+
+            Some(crate::proto::file::ExtFile::Image(crate::proto::Image {
+                height: image_row.height.into(),
+                width: image_row.width.into(),
+                aspect_ratio: image_row.ratio as f32,
+                colors,
+                thumbnails,
+            }))
+        } else {
+            None
+        };
+
+        Ok(ret)
     }
 }
