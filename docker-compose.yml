@@ -1,0 +1,10 @@
+version: '3.4'
+services:
+  hooyad:
+    build:
+      context: .
+      target: hooyad
+  hooya-web-proxy:
+    build:
+      context: .
+      target: hooya-web-proxy
