@@ -10,7 +10,7 @@ pub fn thumbnail(
     out_file: &PathBuf,
     long_edge: u32,
 ) -> Result<(u32, u32)> {
-    let decoded = in_image.thumbnail(long_edge, long_edge);
+    let decoded = in_image.thumbnail(long_edge, long_edge).into_rgba8();
     decoded.save_with_format(out_file, ImageFormat::Jpeg)?;
 
     Ok((decoded.height(), decoded.width()))

@@ -28,7 +28,14 @@ pub async fn stream_file_to_remote_filestore(
         let resp = client
             .stream_to_filestore(futures_util::stream::iter(chunks))
             .await
-            .map_err(anyhow::Error::new)?;
+            .map_err(|e| {
+                anyhow::format_err!(
+                    "Error adding {}: {}",
+                    local_file.to_string_lossy(),
+                    e
+                )
+            })?;
+
         let cid = resp.into_inner().cid;
         client
             .tag_cid(crate::proto::TagCidRequest {
