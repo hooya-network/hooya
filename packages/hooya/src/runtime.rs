@@ -221,6 +221,9 @@ impl Runtime {
             })
             .await?;
 
+        // Clear out old thumbnails as this generates new ones
+        self.db.delete_old_thumbnails(cid.clone()).await?;
+
         // Thumbnail sizes to generate
         let t_sizes_long_edge = vec![320, 640, 1280];
 

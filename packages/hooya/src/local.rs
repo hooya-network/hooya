@@ -215,6 +215,17 @@ impl Db {
         Ok(())
     }
 
+    pub async fn delete_old_thumbnails(&self, cid: Vec<u8>) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM Thumbnails WHERE SourceCid=?"#,
+        )
+        .bind(cid)
+        .execute(&self.executor)
+        .await?;
+        Ok(())
+    }
+
     pub async fn new_image(&self, image: ImageRow) -> Result<()> {
         sqlx::query(
             r#"
