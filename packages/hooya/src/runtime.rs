@@ -205,7 +205,8 @@ impl Runtime {
         mimetype: &str,
     ) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
-        let decoded_image = crate::image::read(&cid_store_path, mimetype)?;
+        let (decoded_image, exif_data) =
+            crate::image::read(&cid_store_path, mimetype)?;
         let img_width = decoded_image.width();
         let img_height = decoded_image.height();
 
@@ -239,6 +240,7 @@ impl Runtime {
 
             let (thumb_height, thumb_width) = crate::image::thumbnail(
                 &decoded_image,
+                exif_data.as_ref(),
                 &thumb_store_path,
                 t_size_long_edge,
             )?;

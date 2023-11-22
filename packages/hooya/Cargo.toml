@@ -15,6 +15,7 @@ anyhow = "1.0"
 infer = "0.14"
 futures-util = "0.3"
 image = "0.24"
+kamadak-exif = "0.5"
 
 [build-dependencies]
 tonic-build = "0.9"
