@@ -10,6 +10,7 @@ pub async fn stream_file_to_remote_filestore(
     mut client: ControlClient<Channel>,
     local_file: &Path,
     unlink: bool,
+    cont_inue: bool,
     init_tags: Vec<crate::proto::Tag>,
 ) -> Result<()> {
     {
@@ -34,7 +35,17 @@ pub async fn stream_file_to_remote_filestore(
                     local_file.to_string_lossy(),
                     e
                 )
-            })?;
+            });
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => if cont_inue {
+                eprintln!("{}", e);
+                return Ok(())
+            } else {
+                return Err(e)
+            }
+        };
 
         let cid = resp.into_inner().cid;
         client
@@ -62,6 +73,7 @@ pub fn stream_dir_to_remote_filestore(
     client: ControlClient<Channel>,
     local_dir: &Path,
     unlink: bool,
+    cont_inue: bool,
     init_tags: Vec<crate::proto::Tag>,
 ) -> BoxFuture<Result<()>> {
     Box::pin(async move {
@@ -73,6 +85,7 @@ pub fn stream_dir_to_remote_filestore(
                     client.clone(),
                     &path,
                     unlink,
+                    cont_inue,
                     init_tags.clone(),
                 )
                 .await?;
@@ -81,6 +94,7 @@ pub fn stream_dir_to_remote_filestore(
                     client.clone(),
                     &path,
                     unlink,
+                    cont_inue,
                     init_tags.clone(),
                 )
                 .await?;

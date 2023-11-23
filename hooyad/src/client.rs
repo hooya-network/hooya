@@ -37,6 +37,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .long("import-tag"),
                 )
                 .arg(
+                    Arg::new("continue")
+                        .action(ArgAction::SetTrue)
+                        .long("continue"),
+                )
+                .arg(
                     Arg::new("files")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(PathBuf)),
@@ -48,6 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Arg::new("unlink")
                         .action(ArgAction::SetTrue)
                         .long("unlink"),
+                )
+                .arg(
+                    Arg::new("continue")
+                        .action(ArgAction::SetTrue)
+                        .long("continue"),
                 )
                 .arg(
                     Arg::new("import-tag")
@@ -85,6 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *sub_matches.get_one::<bool>("just-hash").unwrap_or(&false);
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
+            let cont_inue =
+                *sub_matches.get_one::<bool>("continue").unwrap_or(&false);
             let import_tags: Vec<hooya::proto::Tag> = sub_matches
                 .get_many::<hooya::proto::Tag>("import-tag")
                 .unwrap_or_default()
@@ -116,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     client.clone(),
                     f,
                     unlink,
+                    cont_inue,
                     import_tags.clone(),
                 )
                 .await?;
@@ -128,6 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<Vec<_>>();
             let unlink =
                 *sub_matches.get_one::<bool>("unlink").unwrap_or(&false);
+            let cont_inue =
+                *sub_matches.get_one::<bool>("continue").unwrap_or(&false);
 
             let import_tags: Vec<hooya::proto::Tag> = sub_matches
                 .get_many::<hooya::proto::Tag>("import-tag")
@@ -140,6 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     client.clone(),
                     d,
                     unlink,
+                    cont_inue,
                     import_tags.clone(),
                 )
                 .await?;
