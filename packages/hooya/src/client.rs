@@ -39,11 +39,13 @@ pub async fn stream_file_to_remote_filestore(
 
         let resp = match resp {
             Ok(r) => r,
-            Err(e) => if cont_inue {
-                eprintln!("{}", e);
-                return Ok(())
-            } else {
-                return Err(e)
+            Err(e) => {
+                if cont_inue {
+                    eprintln!("{}", e);
+                    return Ok(());
+                } else {
+                    return Err(e);
+                }
             }
         };
 
