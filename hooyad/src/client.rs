@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{command, value_parser, Arg, ArgAction, Command};
 use dotenv::dotenv;
 use hooya::proto::{
-    control_client::ControlClient, ContentAtCidRequest, TagCidRequest,
+    control_client::ControlClient, ContentAtCidRequest, ReimportRequest,
+    TagCidRequest,
 };
 use std::path::{Path, PathBuf};
 mod config;
@@ -80,6 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         )
         .subcommand(Command::new("dl").arg(Arg::new("cid").required(true)))
+        .subcommand(
+            Command::new("reimport").arg(Arg::new("cid").required(true)),
+        )
         .get_matches();
 
     let mut client = ControlClient::connect(format!(
@@ -188,6 +192,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             while let Some(m) = chunk_stream.message().await? {
                 file.write_all(&m.data)?;
             }
+        }
+        Some(("reimport", sub_matches)) => {
+            let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
+            let (_, cid) = hooya::cid::decode(encoded_cid)?;
+
+            client.reimport(ReimportRequest { cid }).await?;
         }
         _ => unreachable!("Exhausted list of subcommands"),
     }

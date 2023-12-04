@@ -232,16 +232,11 @@ impl Db {
             INSERT INTO Images (Cid, Height, Width, Ratio, PrimaryColor, Colors) VALUES
             (?, ?, ?, ?, ?, ?) ON CONFLICT(Cid)
                 DO UPDATE SET
-                Height=?, Width=?,
-                Ratio=?, PrimaryColor=?,
-                Colors=?"#,
+                Height=excluded.Height, Width=excluded.Width,
+                Ratio=excluded.Ratio, PrimaryColor=excluded.PrimaryColor,
+                Colors=excluded.Colors"#,
         )
         .bind(image.cid)
-        .bind(image.height)
-        .bind(image.width)
-        .bind(image.ratio)
-        .bind(image.primary_color.clone())
-        .bind(image.colors.clone())
         .bind(image.height)
         .bind(image.width)
         .bind(image.ratio)
