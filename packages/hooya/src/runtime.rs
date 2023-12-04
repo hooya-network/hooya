@@ -10,7 +10,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub async fn new_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
+    pub async fn import_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
 
         let size: i64 =

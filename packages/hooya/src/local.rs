@@ -229,10 +229,19 @@ impl Db {
     pub async fn new_image(&self, image: ImageRow) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT OR IGNORE INTO Images (Cid, Height, Width, Ratio, PrimaryColor, Colors) VALUES
-            (?, ?, ?, ?, ?, ?)"#,
+            INSERT INTO Images (Cid, Height, Width, Ratio, PrimaryColor, Colors) VALUES
+            (?, ?, ?, ?, ?, ?) ON CONFLICT(Cid)
+                DO UPDATE SET
+                Height=?, Width=?,
+                Ratio=?, PrimaryColor=?,
+                Colors=?"#,
         )
         .bind(image.cid)
+        .bind(image.height)
+        .bind(image.width)
+        .bind(image.ratio)
+        .bind(image.primary_color.clone())
+        .bind(image.colors.clone())
         .bind(image.height)
         .bind(image.width)
         .bind(image.ratio)

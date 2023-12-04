@@ -6,8 +6,8 @@ use hooya::proto::{
     CidInfoReply, CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
     FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
     LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
-    StreamToFilestoreReply, TagCidReply, TagCidRequest, TagsReply, TagsRequest,
-    VersionReply, VersionRequest,
+    ReimportReply, ReimportRequest, StreamToFilestoreReply, TagCidReply,
+    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -90,11 +90,25 @@ impl Control for IControl {
         std::fs::rename(tmp_path, cid_store_path)?;
 
         self.runtime
-            .new_from_filestore(cid.clone())
+            .import_from_filestore(cid.clone())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let reply = StreamToFilestoreReply { cid };
+        Ok(Response::new(reply))
+    }
+
+    async fn reimport(
+        &self,
+        r: Request<ReimportRequest>,
+    ) -> Result<Response<ReimportReply>, Status> {
+        let cid = r.into_inner().cid;
+        self.runtime
+            .import_from_filestore(cid.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let reply = ReimportReply {};
         Ok(Response::new(reply))
     }
 
