@@ -82,7 +82,8 @@ fn main() -> glib::ExitCode {
         build_ui(app, endpoint);
     });
 
-    application.run()
+    let empty: Vec<String> = vec![];
+    application.run_with_args(&empty)
 }
 
 fn build_ui(app: &Application, endpoint: Endpoint) {
