@@ -1,8 +1,9 @@
+use anyhow::{anyhow, Error};
 use clap::{command, Arg};
 use dotenv::dotenv;
 use gtk::gdk::{Display, Texture};
 use gtk::gdk_pixbuf::PixbufLoader;
-use gtk::glib::clone;
+use gtk::glib::{clone, g_printerr};
 use gtk::pango::EllipsizeMode;
 use gtk::{
     glib, Application, ApplicationWindow, ContentFit, Entry, FlowBox,
@@ -13,7 +14,10 @@ use gtk::{
     STYLE_PROVIDER_PRIORITY_APPLICATION,
 };
 use hooya::proto::control_client::ControlClient;
-use hooya::proto::{ContentAtCidRequest, LocalFilePageRequest, TagsRequest};
+use hooya::proto::{
+    CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
+    LocalFilePageRequest, TagsRequest, Thumbnail,
+};
 use mason_grid_layout::MasonGridLayout;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -106,7 +110,7 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
             let j_1 = rt.spawn(clone!(@strong data_event_sender => async move {
                 let rand_files = client_1
                     .local_file_page(LocalFilePageRequest {
-                        page_size: 50,
+                        page_size: 100,
                         page_token: "0".to_string(),
                         oldest_first: false,
                     }).await
@@ -115,8 +119,15 @@ fn build_ui(app: &Application, endpoint: Endpoint) {
                     .file;
 
                 for file in rand_files {
-                    let stream = request_data_at_cid(client_1.clone(), file.cid.clone())
+                    let stream = request_cid_thumbnail(client_1.clone(), file.cid.clone())
                         .await;
+                    let stream = match stream {
+                        Ok(s) => s,
+                        Err(e) => {
+                            g_printerr!("{}\n", e.to_string());
+                            continue
+                        },
+                    };
                     data_event_sender
                         .send(DataEvent::AppendImageToGrid { file, stream: Box::pin(stream) })
                         .await
@@ -168,6 +179,53 @@ async fn request_data_at_cid(
     )
 }
 
+async fn request_cid_thumbnail(
+    mut client: ControlClient<Channel>,
+    cid: Vec<u8>,
+) -> Result<impl Stream<Item = IncomingImage>, Error> {
+    let resp_file_info = client
+        .cid_info(CidInfoRequest { cid: cid.clone() })
+        .await?
+        .into_inner()
+        .file
+        .unwrap();
+
+    let ext_file = match resp_file_info.ext_file {
+        Some(e) => e,
+        None => return Err(anyhow!("No extended file information")),
+    };
+
+    let thumbs = match ext_file {
+        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+    };
+
+    let thumbnail = closest_thumbnail(&thumbs, 1280);
+    let long_edge = if thumbnail.width > thumbnail.height {
+        thumbnail.width
+    } else {
+        thumbnail.height
+    }
+    .try_into()
+    .unwrap();
+
+    let chunk_stream = client
+        .cid_thumbnail(CidThumbnailRequest {
+            source_cid: cid,
+            long_edge,
+        })
+        .await?
+        .into_inner();
+
+    Ok(Box::pin(
+        chunk_stream
+            // Minimal delay to allow GUI to maybe update during stream
+            .throttle(Duration::from_millis(10))
+            .map(move |c| {
+                let chunk = c.unwrap().data;
+                IncomingImage { chunk }
+            }),
+    ))
+}
 fn build_browse_window(
     app: &Application,
     ui_event_sender: UnboundedSender<UiEvent>,
@@ -727,4 +785,18 @@ fn human_readable_size(size: i64) -> String {
     }
 
     format!("{}B", size)
+}
+
+fn closest_thumbnail(thumbnails: &[Thumbnail], long_edge: i64) -> &Thumbnail {
+    thumbnails
+        .iter()
+        .max_by(|x, y| {
+            if x.width > x.height {
+                ((y.width - long_edge).abs()).cmp(&(x.width - long_edge).abs())
+            } else {
+                ((y.height - long_edge).abs())
+                    .cmp(&(x.height - long_edge).abs())
+            }
+        })
+        .unwrap()
 }
