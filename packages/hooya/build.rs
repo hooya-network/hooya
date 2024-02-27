@@ -1,5 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("../../proto/hooya.proto")?;
-    tonic_build::compile_protos("../../proto/control.proto")?;
+    tonic_build::configure()
+        .type_attribute("Tag", "#[derive(serde::Deserialize, serde::Serialize)]")
+        .compile(&["hooya.proto", "control.proto"], &["../../proto"])?;
     Ok(())
 }

@@ -1226,6 +1226,7 @@ dependencies = [
  "kamadak-exif",
  "prost",
  "ring",
+ "serde",
  "sqlx",
  "tokio",
  "tonic",

@@ -22,3 +22,10 @@ impl From<&str> for proto::Tag {
         }
     }
 }
+
+impl ToString for proto::Tag {
+    fn to_string(&self) -> String {
+        vec![self.namespace.clone(), self.descriptor.clone()].join(":")
+    }
+}
+

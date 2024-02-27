@@ -10,7 +10,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_client::ControlClient, CidInfoRequest, CidThumbnailRequest,
-    ContentAtCidRequest, Thumbnail,
+    ContentAtCidRequest, Thumbnail, Tag, TagsRequest,
 };
 use tonic::transport::Channel;
 mod config;
@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/cid-thumbnail/:cid/medium", get(cid_thumbnail_medium))
         .route("/cid-thumbnail/:cid/small", get(cid_thumbnail_small))
         .route("/cid-thumbnail/:cid/:long_edge", get(cid_thumbnail))
+        .route("/cid-tags/:cid", get(cid_tags))
         .with_state(state);
 
     axum::Server::bind(
@@ -412,4 +413,30 @@ fn mimetype_extension(mimetype: &str) -> Option<String> {
         "video/mp4" => Some("mp4".to_string()),
         _ => None,
     }
+}
+
+async fn cid_tags(
+    State(state): State<AState>,
+    Path(encoded_cid): Path<String>,
+) -> impl IntoResponse {
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
+
+    let mut client = state.client;
+
+    let tags: Vec<Tag> = client
+        .tags(TagsRequest{
+            cid,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .tags;
+
+    axum::Json(tags).into_response()
 }
