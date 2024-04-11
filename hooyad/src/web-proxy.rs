@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Serialize, Deserialize};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -10,7 +11,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_client::ControlClient, CidInfoRequest, CidThumbnailRequest,
-    ContentAtCidRequest, Thumbnail, Tag, TagsRequest,
+    ContentAtCidRequest, Thumbnail, Tag, TagsRequest, LocalFilePageRequest,
 };
 use tonic::transport::Channel;
 mod config;
@@ -54,6 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/cid-thumbnail/:cid/small", get(cid_thumbnail_small))
         .route("/cid-thumbnail/:cid/:long_edge", get(cid_thumbnail))
         .route("/cid-tags/:cid", get(cid_tags))
+        .route("/cid-info/:cid", get(cid_info))
+        .route("/local-file-page/:page_token", get(local_file_page))
         .with_state(state);
 
     axum::Server::bind(
@@ -439,4 +442,94 @@ async fn cid_tags(
         .tags;
 
     axum::Json(tags).into_response()
+}
+
+async fn cid_info(
+    State(state): State<AState>,
+    Path(encoded_cid): Path<String>,
+) -> impl IntoResponse {
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
+
+    let mut client = state.client;
+
+    let info: Option<hooya::proto::File> = client
+        .cid_info(CidInfoRequest{
+            cid,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .file;
+
+    let info = match info {
+        Some(i) => i,
+        _ => return (axum::http::StatusCode::BAD_REQUEST, "No Info")
+                .into_response()
+    };
+
+    // Doing this only to translate CID
+    let cid = hooya::cid::encode(info.cid);
+    let size = info.size;
+    let mimetype = info.mimetype;
+    let ext_file = info.ext_file;
+
+    let body = CidInfoResponse {
+        cid,
+        size,
+        mimetype,
+        ext_file,
+    };
+
+    axum::Json(body).into_response()
+}
+
+async fn local_file_page(
+    State(state): State<AState>,
+    Path(page_token): Path<String>,
+) -> impl IntoResponse {
+    let mut client = state.client;
+
+    let local_file_page_resp = client
+        .local_file_page(LocalFilePageRequest{
+            oldest_first: false,
+            page_token,
+            page_size: 100,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let next_page_token = local_file_page_resp.next_page_token;
+    let cid = local_file_page_resp
+        .file
+        .iter()
+        .map(|f| hooya::cid::encode(f.cid.clone()))
+        .collect();
+
+    let body = LocalFilePageResponse {
+        cid,
+        next_page_token,
+    };
+
+    axum::Json(body).into_response()
+}
+
+#[derive(Serialize, Deserialize)]
+struct LocalFilePageResponse {
+    cid: Vec<String>,
+    next_page_token: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CidInfoResponse {
+    cid: String,
+    size: i64,
+    mimetype: Option<String>,
+    ext_file: Option<hooya::proto::file::ExtFile>,
 }
