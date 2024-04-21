@@ -29,17 +29,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .arg(
                     Arg::new("unlink")
                         .action(ArgAction::SetTrue)
+                        .help("Delete file after successfully importing")
                         .long("unlink"),
                 )
                 .arg(
                     Arg::new("import-tag")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(hooya::proto::Tag))
+                        .help("Tag to apply to imported files")
                         .long("import-tag"),
                 )
                 .arg(
                     Arg::new("continue")
                         .action(ArgAction::SetTrue)
+                        .help("Do not stop import on a fatal error")
                         .long("continue"),
                 )
                 .arg(
@@ -53,17 +56,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .arg(
                     Arg::new("unlink")
                         .action(ArgAction::SetTrue)
+                        .help("Delete file after successfully importing")
                         .long("unlink"),
                 )
                 .arg(
                     Arg::new("continue")
                         .action(ArgAction::SetTrue)
+                        .help("Do not stop import on a fatal error")
                         .long("continue"),
                 )
                 .arg(
                     Arg::new("import-tag")
                         .action(ArgAction::Append)
                         .value_parser(value_parser!(hooya::proto::Tag))
+                        .help("Tag to apply to imported files")
                         .long("import-tag"),
                 )
                 .arg(
