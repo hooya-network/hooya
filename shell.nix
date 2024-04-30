@@ -28,6 +28,7 @@ stdenv.mkDerivation {
   ];
   buildInputs = [
     rust
+    ffmpeg
     nodejs
     git
     protobuf

@@ -1,4 +1,4 @@
-use crate::local::{self, FileRow, ImageRow, TagMapRow, ThumbnailRow};
+use crate::local::{self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow};
 use crate::proto::{File, Tag, Thumbnail};
 use anyhow::Result;
 use std::fs;
@@ -33,7 +33,9 @@ impl Runtime {
                 infer::MatcherType::Image => {
                     self.import_image(cid, &mimetype.unwrap()).await?
                 }
-                infer::MatcherType::Video => {}
+                infer::MatcherType::Video => {
+                    self.import_video(cid, &mimetype.unwrap()).await?
+                }
                 _ => {}
             }
         }
@@ -199,6 +201,80 @@ impl Runtime {
         Ok((files, (offset + page_size).to_string()))
     }
 
+    pub async fn import_video(
+        &self,
+        cid: Vec<u8>,
+        mimetype: &str,
+    ) -> Result<()> {
+        let cid_store_path = self.derive_store_path(&cid)?;
+        let video_metadata = crate::video::extract_video_metadata(&cid_store_path)?;
+        let video_width = video_metadata.width;
+        let video_height = video_metadata.height;
+        let video_duration = video_metadata.duration;
+
+        self.db
+            .new_video(VideoRow {
+                cid: cid.clone(),
+                height: video_height,
+                width: video_width,
+                duration: video_duration,
+                ratio: f64::from(video_width) / f64::from(video_height),
+            })
+            .await?;
+
+        // Clear out old thumbnails as this generates new ones
+        self.db.delete_old_thumbnails(cid.clone()).await?;
+
+        // Thumbnail sizes to generate
+        let t_sizes_long_edge = vec![320, 640, 1280];
+
+        for t_size_long_edge in t_sizes_long_edge {
+            if video_width < t_size_long_edge && video_height < t_size_long_edge {
+                continue;
+            }
+
+            let thumb_store_path =
+                self.derive_thumb_path(&cid, t_size_long_edge)?;
+
+            let parent = thumb_store_path.parent().unwrap();
+            if !parent.is_dir() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let (preview_height, preview_width) = crate::video::preview(
+                &cid_store_path,
+                &thumb_store_path,
+                t_size_long_edge,
+            )?;
+
+            let fh = std::fs::File::open(thumb_store_path)?;
+            let size = fh.metadata()?.len().try_into().unwrap(); // TODO
+
+            let chunks = crate::ChunkedReader::new(fh);
+            let mut sha_context = crate::cid::new_digest_context();
+
+            for c in chunks {
+                sha_context.update(&c?);
+            }
+
+            let thumb_cid = crate::cid::wrap_digest(sha_context.finish())?;
+
+            self.db
+                .new_thumbnail(ThumbnailRow {
+                    cid: thumb_cid,
+                    size,
+                    mimetype: mimetype.to_string(),
+                    source_cid: cid.clone(),
+                    ratio: f64::from(video_width) / f64::from(video_height),
+                    height: preview_height.into(),
+                    width: preview_width.into(),
+                    is_animated: true,
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn import_image(
         &self,
         cid: Vec<u8>,
@@ -309,6 +385,34 @@ impl Runtime {
                 width: image_row.width.into(),
                 aspect_ratio: image_row.ratio as f32,
                 colors,
+                thumbnails,
+            }))
+        } else if mimetype.starts_with("video") {
+            let video_row = self.db.video_row(cid.clone()).await?;
+            let thumbnails = self
+                .db
+                .thumbnails_by_source_cid(cid)
+                .await?
+                .iter()
+                .map(|t| Thumbnail {
+                    cid: t.cid.clone(),
+                    size: t.size,
+                    mimetype: t.mimetype.clone(),
+                    source_cid: t.source_cid.clone(),
+                    height: t.height,
+                    width: t.width,
+                    aspect_ratio: t.ratio as f32,
+                    is_animated: t.is_animated,
+                })
+                .collect();
+
+
+
+            Some(crate::proto::file::ExtFile::Video(crate::proto::Video {
+                height: video_row.height.into(),
+                width: video_row.width.into(),
+                aspect_ratio: video_row.ratio as f32,
+                duration: video_row.duration as f32,
                 thumbnails,
             }))
         } else {

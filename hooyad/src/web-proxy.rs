@@ -167,6 +167,7 @@ async fn cid_thumbnail_medium(
 
     let thumbs = match ext_file {
         hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
     };
 
     let thumbnail = closest_thumbnail(&thumbs, 1280);
@@ -251,6 +252,7 @@ async fn cid_thumbnail_small(
 
     let thumbs = match ext_file {
         hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
     };
 
     let thumbnail = closest_thumbnail(&thumbs, 640);
@@ -335,6 +337,7 @@ async fn cid_thumbnail(
 
     let thumbs = match ext_file {
         hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
     };
 
     let thumb_match = thumbs.iter().find(|t| {
@@ -546,6 +549,11 @@ use serde::{Serialize, Deserialize};
 
     #[derive(Serialize, Deserialize)]
     pub struct Video {
+        pub height: i64,
+        pub width: i64,
+        pub aspect_ratio: f32,
+        pub duration: f32,
+        pub thumbnails: Vec<Thumbnail>,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -554,6 +562,7 @@ use serde::{Serialize, Deserialize};
         pub source_cid: String,
         pub size: i64,
         pub height: i64,
+        pub mimetype: String,
         pub width: i64,
         pub aspect_ratio: f32,
         pub is_animated: bool,
@@ -577,6 +586,14 @@ use serde::{Serialize, Deserialize};
                         colors: i.colors,
                         thumbnails: i.thumbnails.into_iter().map(|t| t.into()).collect(),
                     }),
+                hooya::proto::file::ExtFile::Video(v) =>
+                    ExtFile::Video(Video {
+                        height: v.height,
+                        width: v.width,
+                        aspect_ratio: v.aspect_ratio,
+                        duration: v.duration,
+                        thumbnails: v.thumbnails.into_iter().map(|t| t.into()).collect(),
+                    }),
             }
         }
     }
@@ -586,6 +603,7 @@ use serde::{Serialize, Deserialize};
             Thumbnail {
                 cid: hooya::cid::encode(t.cid),
                 source_cid: hooya::cid::encode(t.source_cid),
+                mimetype: t.mimetype,
                 size: t.size,
                 height: t.height,
                 width: t.width,

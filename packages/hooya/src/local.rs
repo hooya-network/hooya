@@ -34,6 +34,14 @@ pub struct ImageRow {
     pub colors: Vec<u8>,
 }
 
+pub struct VideoRow {
+    pub cid: Vec<u8>,
+    pub height: u32,
+    pub width: u32,
+    pub ratio: f64,
+    pub duration: f64,
+}
+
 pub struct ThumbnailRow {
     pub cid: Vec<u8>,
     pub size: i64,
@@ -101,6 +109,19 @@ impl Db {
             Ratio REAL NOT NULL,
             PrimaryColor BINARY(3) DEFAULT NULL,
             Colors VARBINARY DEFAULT NULL,
+            FOREIGN KEY (Cid) REFERENCES Files(Cid) ON DELETE CASCADE)"#,
+            )
+            .await?;
+
+        self.executor
+            .execute(
+                r#"
+            CREATE TABLE IF NOT EXISTS Videos (
+            Cid VARBINARY NOT NULL PRIMARY KEY,
+            Height INTEGER UNSIGNED NOT NULL,
+            Width INTEGER UNSIGNED NOT NULL,
+            Ratio REAL NOT NULL,
+            Duration FLOAT NOT NULL,
             FOREIGN KEY (Cid) REFERENCES Files(Cid) ON DELETE CASCADE)"#,
             )
             .await?;
@@ -247,6 +268,25 @@ impl Db {
         Ok(())
     }
 
+    pub async fn new_video(&self, image: VideoRow) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO Videos (Cid, Height, Width, Ratio, Duration) VALUES
+            (?, ?, ?, ?, ?) ON CONFLICT(Cid)
+                DO UPDATE SET
+                Height=excluded.Height, Width=excluded.Width,
+                Ratio=excluded.Ratio, Duration=excluded.Duration"#,
+        )
+        .bind(image.cid)
+        .bind(image.height)
+        .bind(image.width)
+        .bind(image.ratio)
+        .bind(image.duration)
+        .execute(&self.executor)
+        .await?;
+        Ok(())
+    }
+
     pub async fn lookup_tag_id(&self, tags: Vec<Tag>) -> Result<Vec<TagRow>> {
         if tags.is_empty() {
             return Ok(vec![]);
@@ -328,6 +368,31 @@ impl Db {
                         ratio,
                         primary_color,
                         colors,
+                    })
+                })
+                .fetch_one(&self.executor)
+                .await?;
+
+        Ok(row)
+    }
+
+    pub async fn video_row(&self, cid: Vec<u8>) -> Result<VideoRow> {
+        let row =
+            sqlx::query("SELECT Cid, Height, Width, Ratio, Duration FROM Videos WHERE Cid=?")
+                .bind(cid)
+                .try_map(|r: SqliteRow| {
+                    let cid = r.try_get("Cid")?;
+                    let height = r.try_get("Height")?;
+                    let width = r.try_get("Width")?;
+                    let ratio = r.try_get("Ratio")?;
+                    let duration = r.try_get("Duration")?;
+
+                    Ok(VideoRow {
+                        cid,
+                        height,
+                        width,
+                        ratio,
+                        duration,
                     })
                 })
                 .fetch_one(&self.executor)
