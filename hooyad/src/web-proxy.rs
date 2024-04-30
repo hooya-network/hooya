@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde::{Serialize, Deserialize};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -473,13 +472,12 @@ async fn cid_info(
                 .into_response()
     };
 
-    // Doing this only to translate CID
     let cid = hooya::cid::encode(info.cid);
     let size = info.size;
     let mimetype = info.mimetype;
-    let ext_file = info.ext_file;
+    let ext_file = info.ext_file.map(|f| f.into());
 
-    let body = CidInfoResponse {
+    let body = proxy_response::CidInfoResponse {
         cid,
         size,
         mimetype,
@@ -512,7 +510,7 @@ async fn local_file_page(
         .map(|f| hooya::cid::encode(f.cid.clone()))
         .collect();
 
-    let body = LocalFilePageResponse {
+    let body = proxy_response::LocalFilePageResponse {
         cid,
         next_page_token,
     };
@@ -520,16 +518,80 @@ async fn local_file_page(
     axum::Json(body).into_response()
 }
 
-#[derive(Serialize, Deserialize)]
-struct LocalFilePageResponse {
-    cid: Vec<String>,
-    next_page_token: String,
-}
+mod proxy_response {
+use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize)]
-struct CidInfoResponse {
-    cid: String,
-    size: i64,
-    mimetype: Option<String>,
-    ext_file: Option<hooya::proto::file::ExtFile>,
+    #[derive(Serialize, Deserialize)]
+    pub struct LocalFilePageResponse {
+        pub cid: Vec<String>,
+        pub next_page_token: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct CidInfoResponse {
+        pub cid: String,
+        pub size: i64,
+        pub mimetype: Option<String>,
+        pub ext_file: Option<ExtFile>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Image {
+        pub height: i64,
+        pub width: i64,
+        pub aspect_ratio: f32,
+        pub colors: Vec<Vec<u8>>,
+        pub thumbnails: Vec<Thumbnail>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Video {
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Thumbnail {
+        pub cid: String,
+        pub source_cid: String,
+        pub size: i64,
+        pub height: i64,
+        pub width: i64,
+        pub aspect_ratio: f32,
+        pub is_animated: bool,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    pub enum ExtFile {
+        Image(Image),
+        Video(Video),
+    }
+
+    impl From<hooya::proto::file::ExtFile> for ExtFile {
+        fn from(e: hooya::proto::file::ExtFile) -> Self {
+            match e {
+                hooya::proto::file::ExtFile::Image(i) =>
+                    ExtFile::Image(Image {
+                        height: i.height,
+                        width: i.width,
+                        aspect_ratio: i.aspect_ratio,
+                        colors: i.colors,
+                        thumbnails: i.thumbnails.into_iter().map(|t| t.into()).collect(),
+                    }),
+            }
+        }
+    }
+
+    impl From<hooya::proto::Thumbnail> for Thumbnail {
+        fn from(t: hooya::proto::Thumbnail) -> Self {
+            Thumbnail {
+                cid: hooya::cid::encode(t.cid),
+                source_cid: hooya::cid::encode(t.source_cid),
+                size: t.size,
+                height: t.height,
+                width: t.width,
+                aspect_ratio: t.aspect_ratio,
+                is_animated: t.is_animated,
+            }
+        }
+    }
 }

@@ -1262,6 +1262,7 @@ dependencies = [
  "prost",
  "rand",
  "semver",
+ "serde",
  "sqlx",
  "tokio",
  "tokio-stream",
