@@ -3,7 +3,7 @@ use sqlx::{
     sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool,
 };
 
-use crate::proto::Tag;
+use crate::proto::{Tag, File, file::ExtFile};
 
 pub struct TagRow {
     pub id: i32,
@@ -463,6 +463,143 @@ impl Db {
             .await?;
 
         Ok(file_rows)
+    }
+    pub async fn all_files_page(
+        &self,
+        page_size: u32,
+        page_number: u32,
+        sort_order: i32,
+        reverse_order: bool,
+    ) -> Result<Vec<File>> {
+        let offset = (page_number.saturating_sub(1)) * page_size;
+
+        let prepared_statement = match sort_order {
+            0 => {
+                if reverse_order {
+                    sqlx::query(r#"
+                        SELECT
+                            f.Cid,
+                            f.Size,
+                            f.Mimetype,
+                            i.Height as "ImageHeight?",
+                            i.Width as "ImageWidth?",
+                            i.Ratio as "ImageRatio?",
+                            i.Colors as "ImageColors?",
+                            i.PrimaryColor as "ImagePrimaryColor?",
+                            v.Height as "VideoHeight?",
+                            v.Width as "VideoWidth?",
+                            v.Ratio as "VideoRatio?",
+                            v.Duration as "VideoDuration?"
+                        FROM Files f
+                        LEFT JOIN Images i ON f.Cid = i.Cid
+                        LEFT JOIN Videos v ON f.Cid = v.Cid
+                        ORDER BY Indexed
+                        LIMIT ? OFFSET ?
+                    "#)
+                    .bind(page_size)
+                    .bind(offset)
+                } else {
+                    sqlx::query(r#"
+                        SELECT
+                            f.Cid,
+                            f.Size,
+                            f.Mimetype,
+                            i.Height as "ImageHeight?",
+                            i.Width as "ImageWidth?",
+                            i.Ratio as "ImageRatio?",
+                            i.Colors as "ImageColors?",
+                            i.PrimaryColor as "ImagePrimaryColor?",
+                            v.Height as "VideoHeight?",
+                            v.Width as "VideoWidth?",
+                            v.Ratio as "VideoRatio?",
+                            v.Duration as "VideoDuration?"
+                        FROM Files f
+                        LEFT JOIN Images i ON f.Cid = i.Cid
+                        LEFT JOIN Videos v ON f.Cid = v.Cid
+                        ORDER BY Indexed DESC
+                        LIMIT ? OFFSET ?
+                    "#)
+                    .bind(page_size)
+                    .bind(offset)
+                }
+            },
+            _ => return Err(anyhow::anyhow!("Invalid sort order"))
+        };
+
+        let raw_files = prepared_statement
+            .fetch_all(&self.executor)
+            .await?;
+
+        let mut files: Vec<File> = Vec::with_capacity(raw_files.len());
+        for raw_file in raw_files.into_iter() {
+            let thumbnails = self.fetch_thumbnails_for(raw_file.try_get("Cid")?).await?;
+            let ext_file = if let Ok(height) = raw_file.try_get("ImageHeight?") {
+                let colors = raw_file.try_get::<Vec<u8>, _>("ImageColors?")?
+                    .chunks(3)
+                    .map(|c| c.into())
+                    .collect();
+                Some(ExtFile::Image(crate::proto::Image {
+                    height,
+                    width: raw_file.try_get("ImageWidth?")?,
+                    aspect_ratio: raw_file.try_get("ImageRatio?")?,
+                    colors,
+                    thumbnails,
+                }))
+            } else if let Ok(height) = raw_file.try_get("VideoHeight?") {
+                Some(ExtFile::Video(crate::proto::Video {
+                    height,
+                    width: raw_file.try_get("VideoWidth")?,
+                    aspect_ratio: raw_file.try_get("VideoRatio?")?,
+                    thumbnails,
+                    duration: raw_file.try_get("VideoDuration?")?,
+                }))
+            } else {
+                None
+            };
+
+            files.push(File {
+                cid: raw_file.try_get("Cid")?,
+                size: raw_file.try_get("Size")?,
+                mimetype: raw_file.try_get("Mimetype")?,
+                ext_file,
+            });
+        }
+
+        Ok(files)
+    }
+
+    async fn fetch_thumbnails_for(&self, source_cid: &[u8]) -> Result<Vec<crate::proto::Thumbnail>> {
+        let thumbnails = sqlx::query(
+            r#"
+            SELECT
+                Cid,
+                Size,
+                Mimetype,
+                SourceCid,
+                Height,
+                Width,
+                Ratio,
+                IsAnimated
+            FROM Thumbnails
+            WHERE SourceCid = ?
+            "#)
+        .bind(source_cid)
+        .try_map(|t: SqliteRow| Ok(crate::proto::Thumbnail {
+            cid: t.try_get("Cid")?,
+            size: t.try_get("Size")?,
+            mimetype: t.try_get("Mimetype")?,
+            source_cid: t.try_get("SourceCid")?,
+            height: t.try_get("Height")?,
+            width: t.try_get("Width")?,
+            aspect_ratio: t.try_get("Ratio")?,
+            is_animated: t.try_get("IsAnimated")?,
+        }))
+        .fetch_all(&self.executor)
+        .await?
+        .into_iter()
+        .collect();
+
+        Ok(thumbnails)
     }
 
     pub async fn random_file(&self, count: u32) -> Result<Vec<FileRow>> {

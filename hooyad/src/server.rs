@@ -7,7 +7,7 @@ use hooya::proto::{
     FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
     LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
     ReimportReply, ReimportRequest, StreamToFilestoreReply, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest,
+    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -204,6 +204,27 @@ impl Control for IControl {
         Ok(Response::new(resp))
     }
 
+    async fn all_files(
+        &self,
+        r: Request<AllFilesRequest>,
+    ) -> Result<Response<AllFilesReply>, Status> {
+        let req = r.into_inner();
+
+        let (files, next_page_token) = self
+            .runtime
+            .all_files_page(req.page_size, req.page_token, req.sort_order, req.reverse_order)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let resp = AllFilesReply {
+            files,
+            total_pages: "TODO".to_string(),
+            next_page_token
+        };
+
+        Ok(Response::new(resp))
+    }
+
     async fn random_local_file(
         &self,
         r: Request<RandomLocalFileRequest>,
@@ -264,6 +285,7 @@ impl Control for IControl {
 
         Ok(Response::new(CidInfoReply { file }))
     }
+
 }
 
 #[tokio::main]
