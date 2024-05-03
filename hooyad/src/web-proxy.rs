@@ -501,7 +501,7 @@ async fn local_file_page(
         .local_file_page(LocalFilePageRequest{
             oldest_first: false,
             page_token,
-            page_size: 100,
+            page_size: 20,
         })
         .await
         .unwrap()
@@ -533,7 +533,7 @@ async fn all_files(
             sort_order: 0,
             reverse_order: false,
             page_token,
-            page_size: 100,
+            page_size: 20,
         })
         .await
         .unwrap()
