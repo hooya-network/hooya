@@ -20,13 +20,20 @@ pub fn preview(
 
     // Calculate scale preserving aspect ratio
     let aspect_ratio = width as f64 / height as f64;
-    let (scaled_width, scaled_height) = if aspect_ratio > 1.0 {
+    let (mut scaled_width, mut scaled_height) = if aspect_ratio > 1.0 {
         // Landscape
         (long_edge, (long_edge as f64 / aspect_ratio) as u32)
     } else {
         // Portrait
         ((long_edge as f64 * aspect_ratio) as u32, long_edge)
     };
+
+    // hacky sidestep around when MP4 width / height not divisible by 2
+    if scaled_width % 2 > 0 {
+        scaled_width += 1;
+    } else if scaled_height % 2 > 0 {
+        scaled_height +=1;
+    }
 
     // 8s preview with 2s snippets
     let step = duration / 5.0;
@@ -38,14 +45,16 @@ pub fn preview(
     ];
 
     let mut command = Command::new("ffmpeg");
-    command.arg("-i").arg(in_video_str);
-    command.arg("-y");
+    command
+        .arg("-i").arg(in_video_str)
+        .arg("-y");
 
     /* We're really out here. We really do this.
      *
      * Maybe can gut the ffmpeg dependency when I pull in OpenCV but this
      * does exactly what I want for now.
      */
+
     command.args(&[
         "-filter_complex",
         &format!(
@@ -64,8 +73,12 @@ pub fn preview(
         "-map", "[outv]"
     ]);
 
-    // Set format to MP4 and output file
-    command.arg("-f").arg("mp4").arg("-movflags").arg("+faststart").arg(out_file_str);
+    command
+        .arg("-f")
+        .arg("mp4")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(out_file_str);
 
     // Execute command
     let status = command.status()?;
