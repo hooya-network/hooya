@@ -178,6 +178,32 @@ impl Runtime {
         Ok(files)
     }
 
+    pub async fn search_page(
+        &self,
+        query: crate::proto::SearchQuery,
+        page_size: u32,
+        page_token: String,
+        sort_order: i32,
+        reverse_order: bool,
+    ) -> Result<(Vec<crate::proto::File>, String)> {
+        // I don't see a reason to not work with pages as simply numbers
+        let page_number: u32 = page_token.parse()?;
+
+        let files = self
+            .db
+            .files_page(Some(query), page_size, page_number, sort_order, reverse_order)
+            .await?;
+
+        let next_page_token = if page_number < 1 {
+            "2".to_string()
+        } else {
+            (page_number + 1).to_string()
+        };
+
+        Ok((files, next_page_token))
+    }
+
+
     pub async fn all_files_page(
         &self,
         page_size: u32,
@@ -189,7 +215,7 @@ impl Runtime {
         let page_number: u32 = page_token.parse()?;
         let files = self
             .db
-            .all_files_page(page_size, page_number, sort_order, reverse_order)
+            .files_page(None, page_size, page_number, sort_order, reverse_order)
             .await?;
 
         let next_page_token = if page_number < 1 {

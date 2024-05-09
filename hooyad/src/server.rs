@@ -7,7 +7,7 @@ use hooya::proto::{
     FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
     LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
     ReimportReply, ReimportRequest, StreamToFilestoreReply, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply,
+    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply, SearchRequest, SearchReply,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -286,6 +286,27 @@ impl Control for IControl {
         Ok(Response::new(CidInfoReply { file }))
     }
 
+    async fn search(
+        &self,
+        r: Request<SearchRequest>,
+    ) -> Result<Response<SearchReply>, Status> {
+        let req = r.into_inner();
+        let search_query = req.search_query.ok_or_else(|| Status::invalid_argument("No query specified"))?;
+
+        let (files, next_page_token) = self
+            .runtime
+            .search_page(search_query, req.page_size, req.page_token, req.sort_order, req.reverse_order)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let resp = SearchReply {
+            files,
+            total_pages: "TODO".to_string(),
+            next_page_token
+        };
+
+        Ok(Response::new(resp))
+    }
 }
 
 #[tokio::main]
@@ -353,6 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Server::builder()
+        .accept_http1(true)
         .add_service(ControlServer::new(IControl {
             runtime: Runtime {
                 filestore_path: filestore_path.to_path_buf(),

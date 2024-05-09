@@ -464,8 +464,9 @@ impl Db {
 
         Ok(file_rows)
     }
-    pub async fn all_files_page(
+    pub async fn files_page(
         &self,
+        query: Option<crate::proto::SearchQuery>,
         page_size: u32,
         page_number: u32,
         sort_order: i32,
@@ -473,57 +474,98 @@ impl Db {
     ) -> Result<Vec<File>> {
         let offset = (page_number.saturating_sub(1)) * page_size;
 
-        let prepared_statement = match sort_order {
-            0 => {
-                if reverse_order {
-                    sqlx::query(r#"
-                        SELECT
-                            f.Cid,
-                            f.Size,
-                            f.Mimetype,
-                            i.Height as "ImageHeight?",
-                            i.Width as "ImageWidth?",
-                            i.Ratio as "ImageRatio?",
-                            i.Colors as "ImageColors?",
-                            i.PrimaryColor as "ImagePrimaryColor?",
-                            v.Height as "VideoHeight?",
-                            v.Width as "VideoWidth?",
-                            v.Ratio as "VideoRatio?",
-                            v.Duration as "VideoDuration?"
-                        FROM Files f
-                        LEFT JOIN Images i ON f.Cid = i.Cid
-                        LEFT JOIN Videos v ON f.Cid = v.Cid
-                        ORDER BY Indexed
-                        LIMIT ? OFFSET ?
-                    "#)
-                    .bind(page_size)
-                    .bind(offset)
-                } else {
-                    sqlx::query(r#"
-                        SELECT
-                            f.Cid,
-                            f.Size,
-                            f.Mimetype,
-                            i.Height as "ImageHeight?",
-                            i.Width as "ImageWidth?",
-                            i.Ratio as "ImageRatio?",
-                            i.Colors as "ImageColors?",
-                            i.PrimaryColor as "ImagePrimaryColor?",
-                            v.Height as "VideoHeight?",
-                            v.Width as "VideoWidth?",
-                            v.Ratio as "VideoRatio?",
-                            v.Duration as "VideoDuration?"
-                        FROM Files f
-                        LEFT JOIN Images i ON f.Cid = i.Cid
-                        LEFT JOIN Videos v ON f.Cid = v.Cid
-                        ORDER BY Indexed DESC
-                        LIMIT ? OFFSET ?
-                    "#)
-                    .bind(page_size)
-                    .bind(offset)
+        let order_clause = match (sort_order, reverse_order) {
+            (0, true) => "ORDER BY Indexed",
+            (0, false) => "ORDER BY Indexed DESC",
+            _ => return Err(anyhow::anyhow!("Invalid sort order")),
+        };
+
+        let sql_query;
+        let prepared_statement = if let Some(q) = query {
+            let mut where_clause = String::new();
+            if !q.tag_query.is_empty() {
+                for (i, q) in q.tag_query.iter().enumerate() {
+                    if i > 0 {
+                        where_clause.push_str(" OR ");
+                    }
+                    if q.negated {
+                        where_clause.push_str(" NOT ")
+                    }
+                    where_clause.push_str("(t.Namespace = ? AND t.Descriptor = ?)");
                 }
-            },
-            _ => return Err(anyhow::anyhow!("Invalid sort order"))
+            }
+
+            let distinct_tag_count = q.tag_query.len();
+            sql_query = format!(r#"
+                SELECT
+                    f.Cid,
+                    f.Size,
+                    f.Mimetype,
+                    i.Height as "ImageHeight?",
+                    i.Width as "ImageWidth?",
+                    i.Ratio as "ImageRatio?",
+                    i.Colors as "ImageColors?",
+                    i.PrimaryColor as "ImagePrimaryColor?",
+                    v.Height as "VideoHeight?",
+                    v.Width as "VideoWidth?",
+                    v.Ratio as "VideoRatio?",
+                    v.Duration as "VideoDuration?"
+                FROM Files f
+                LEFT JOIN Images i ON f.Cid = i.Cid
+                LEFT JOIN Videos v ON f.Cid = v.Cid
+                INNER JOIN TagMap tm ON f.Cid = tm.FileCid
+                INNER JOIN Tags t ON t.Id = tm.TagId
+                WHERE {}
+                GROUP BY f.Cid
+                HAVING COUNT(DISTINCT t.Id) = {}
+                {}
+                LIMIT ? OFFSET ?
+            "#, where_clause, distinct_tag_count, order_clause);
+
+            // Bind namespace:descriptor parameters defined earlier
+            let mut query = sqlx::query(&sql_query);
+            for tag in q.tag_query {
+                let namespace = tag.namespace
+                    .unwrap_or("general".to_string())
+                    .to_ascii_lowercase();
+                let descriptor = tag
+                    .descriptor
+                    .to_ascii_lowercase();
+
+                query = query
+                    .bind(namespace)
+                    .bind(descriptor);
+            }
+
+            // Lastly bind the pagination parameters
+            query
+                .bind(page_size)
+                .bind(offset)
+        } else {
+            sql_query = format!(r#"
+                SELECT
+                    f.Cid,
+                    f.Size,
+                    f.Mimetype,
+                    i.Height as "ImageHeight?",
+                    i.Width as "ImageWidth?",
+                    i.Ratio as "ImageRatio?",
+                    i.Colors as "ImageColors?",
+                    i.PrimaryColor as "ImagePrimaryColor?",
+                    v.Height as "VideoHeight?",
+                    v.Width as "VideoWidth?",
+                    v.Ratio as "VideoRatio?",
+                    v.Duration as "VideoDuration?"
+                FROM Files f
+                LEFT JOIN Images i ON f.Cid = i.Cid
+                LEFT JOIN Videos v ON f.Cid = v.Cid
+                {}
+                LIMIT ? OFFSET ?
+            "#, order_clause);
+
+            sqlx::query(&sql_query)
+                .bind(page_size)
+                .bind(offset)
         };
 
         let raw_files = prepared_statement
