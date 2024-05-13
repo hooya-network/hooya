@@ -7,7 +7,7 @@ use hooya::proto::{
     FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
     LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
     ReimportReply, ReimportRequest, StreamToFilestoreReply, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply, SearchRequest, SearchReply,
+    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply, SearchRequest, SearchReply, SuggestTagRequest, SuggestTagReply,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -303,6 +303,39 @@ impl Control for IControl {
             files,
             total_pages: "TODO".to_string(),
             next_page_token
+        };
+
+        Ok(Response::new(resp))
+    }
+
+    async fn suggest_tag(
+        &self,
+        r: Request<SuggestTagRequest>,
+    ) -> Result<Response<SuggestTagReply>, Status> {
+        let req = r.into_inner();
+        let existing_tags = req.tag_query;
+        let suggest_string = req.suggest_string;
+
+        let tag_suggestion = match suggest_string.split_once(":") {
+            Some((namespace, incomplete_descriptor)) => {
+                self
+                    .runtime
+                    .suggest_tags_within_namespace(
+                        existing_tags, namespace.to_string(), incomplete_descriptor.to_string())
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?
+           }
+            None => {
+                self
+                    .runtime
+                    .suggest_tags_without_namespace(existing_tags, suggest_string)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?
+            }
+        };
+
+        let resp = SuggestTagReply {
+            tag_suggestion,
         };
 
         Ok(Response::new(resp))

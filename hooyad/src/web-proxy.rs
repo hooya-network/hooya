@@ -10,7 +10,7 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
     control_client::ControlClient, CidInfoRequest, CidThumbnailRequest,
-    ContentAtCidRequest, Thumbnail, Tag, TagsRequest, LocalFilePageRequest, AllFilesRequest, SearchRequest, TagQuery, SearchQuery
+    ContentAtCidRequest, Thumbnail, Tag, TagsRequest, LocalFilePageRequest, AllFilesRequest, SearchRequest, TagQuery, SearchQuery, SuggestTagRequest
 };
 use tonic::transport::Channel;
 mod config;
@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/local-file-page/:page_token", get(local_file_page))
         .route("/all-files/:page_token", get(all_files))
         .route("/search-files/:query/:page_token", get(search_files))
+        .route("/suggest-tag/:query", get(suggest_tag))
         .with_state(state);
 
     axum::Server::bind(
@@ -566,6 +567,56 @@ async fn all_files(
     };
 
     axum::Json(body).into_response()
+}
+
+async fn suggest_tag(
+    State(state): State<AState>,
+    Path(query): Path<String>,
+) -> impl IntoResponse {
+    let mut client = state.client;
+    let tags: Vec<&str> = query.split(',')
+        .collect();
+
+    let existing_tags = if tags.len() > 1 {
+        tags[..tags.len() - 1].to_vec()
+    } else {
+        vec![]
+    };
+
+    let existing_tags = existing_tags
+        .iter()
+        .map(|t| {
+            match t.split_once(':') {
+                Some((namespace, descriptor)) => TagQuery {
+                    namespace: Some(namespace.to_string()),
+                    descriptor: descriptor.to_string(),
+                    negated: false,
+                },
+                None => TagQuery {
+                    namespace: None,
+                    descriptor: t.to_string(),
+                    negated: false,
+                }
+            }
+        })
+        .collect();
+
+    // Will always have at least one element because request was routed here
+    let suggest_string = tags[tags.len() - 1].to_string();
+
+    let query = SuggestTagRequest {
+        tag_query: existing_tags,
+        suggest_string,
+        max_suggest: 10,
+    };
+
+    let suggestions = client.suggest_tag(query)
+        .await
+        .unwrap()
+        .into_inner()
+        .tag_suggestion;
+
+    axum::Json(suggestions).into_response()
 }
 
 async fn search_files(

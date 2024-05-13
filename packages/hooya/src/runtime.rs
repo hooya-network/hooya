@@ -178,6 +178,25 @@ impl Runtime {
         Ok(files)
     }
 
+    pub async fn suggest_tags_within_namespace(
+        &self,
+        _existing_tags: Vec<crate::proto::TagQuery>,
+        _within_namespace: String,
+        _incomplete_descriptor: String,
+    ) -> Result<Vec<crate::proto::TagSuggestion>> {
+        // TODO
+        Ok(vec![])
+    }
+
+    pub async fn suggest_tags_without_namespace(
+        &self,
+        _existing_tags: Vec<crate::proto::TagQuery>,
+        _suggest_string: String,
+    ) -> Result<Vec<crate::proto::TagSuggestion>> {
+        // TODO
+        Ok(vec![])
+    }
+
     pub async fn search_page(
         &self,
         query: crate::proto::SearchQuery,
