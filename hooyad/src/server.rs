@@ -331,31 +331,32 @@ impl Control for IControl {
         let existing_tags = req.tag_query;
         let suggest_string = req.suggest_string;
 
-        let tag_suggestion = if !suggest_string.is_empty() {
-            match suggest_string.split_once(":") {
-                Some((namespace, incomplete_descriptor)) => self
-                    .runtime
-                    .suggest_tags_within_namespace(
-                        &existing_tags,
-                        namespace.to_string(),
-                        incomplete_descriptor.to_string(),
-                    )
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?,
-                None => self
-                    .runtime
-                    .suggest_tags_without_namespace(
-                        &existing_tags,
-                        &suggest_string,
-                    )
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?,
-            }
-        } else {
-            self.runtime
-                .suggest_all_tags()
+        let tag_suggestion = match suggest_string.split_once(":") {
+            Some((namespace, incomplete_descriptor)) => self
+                .runtime
+                .suggest_tags_within_namespace(
+                    &existing_tags,
+                    namespace.to_string(),
+                    incomplete_descriptor.to_string(),
+                )
                 .await
-                .map_err(|e| Status::internal(e.to_string()))?
+                .map_err(|e| Status::internal(e.to_string()))?,
+            None => {
+                if !existing_tags.is_empty() {
+                    self.runtime
+                        .suggest_tags_without_namespace(
+                            &existing_tags,
+                            &suggest_string,
+                        )
+                        .await
+                        .map_err(|e| Status::internal(e.to_string()))?
+                } else {
+                    self.runtime
+                        .suggest_all_tags()
+                        .await
+                        .map_err(|e| Status::internal(e.to_string()))?
+                }
+            }
         };
 
         let resp = SuggestTagReply {
