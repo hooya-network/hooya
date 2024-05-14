@@ -328,7 +328,7 @@ impl Control for IControl {
             None => {
                 self
                     .runtime
-                    .suggest_tags_without_namespace(existing_tags, suggest_string)
+                    .suggest_tags_without_namespace(existing_tags, &suggest_string)
                     .await
                     .map_err(|e| Status::internal(e.to_string()))?
             }

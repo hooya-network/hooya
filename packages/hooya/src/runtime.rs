@@ -180,21 +180,64 @@ impl Runtime {
 
     pub async fn suggest_tags_within_namespace(
         &self,
-        _existing_tags: Vec<crate::proto::TagQuery>,
-        _within_namespace: String,
-        _incomplete_descriptor: String,
+        existing_tags: Vec<crate::proto::TagQuery>,
+        within_namespace: String,
+        incomplete_descriptor: String,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
-        // TODO
-        Ok(vec![])
+        // CASE - User was typing a descriptor with a qualified namespace
+        let mut suggestions = self
+            .db
+            .get_descriptors_that_start_with(existing_tags, Some(within_namespace), &incomplete_descriptor)
+            .await?;
+
+        suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+        let ret = suggestions
+            .into_iter()
+            .map(|s| crate::proto::TagSuggestion {
+                namespace: Some(s.0.namespace),
+                descriptor: s.0.descriptor,
+                count: s.1,
+                distance: 0, // TODO Levenshtein distance
+            })
+            .collect();
+
+        Ok(ret)
     }
 
     pub async fn suggest_tags_without_namespace(
         &self,
-        _existing_tags: Vec<crate::proto::TagQuery>,
-        _suggest_string: String,
+        existing_tags: Vec<crate::proto::TagQuery>,
+        suggest_string: &str,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
-        // TODO
-        Ok(vec![])
+        let mut suggestions = vec![];
+
+        // CASE - User was typing a namespace
+        suggestions.append(&mut self
+            .db
+            .get_most_popular_tags_within_namespace_that_starts_with(existing_tags.clone(), suggest_string)
+            .await?);
+
+        // CASE - User was typing a descriptor without qualifying a namespace
+        suggestions.append(&mut self
+            .db
+            .get_descriptors_that_start_with(existing_tags, None, suggest_string)
+            .await?);
+
+        suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        // suggestions.shrink_to(len);
+
+        let ret = suggestions
+            .into_iter()
+            .map(|s| crate::proto::TagSuggestion {
+                namespace: Some(s.0.namespace),
+                descriptor: s.0.descriptor,
+                count: s.1,
+                distance: 0, // TODO Levenshtein distance
+            })
+            .collect();
+
+        Ok(ret)
     }
 
     pub async fn search_page(

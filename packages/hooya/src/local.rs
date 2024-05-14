@@ -5,19 +5,20 @@ use sqlx::{
 
 use crate::proto::{Tag, File, file::ExtFile};
 
+#[derive(Debug)]
 pub struct TagRow {
     pub id: i32,
     pub namespace: String,
     pub descriptor: String,
 }
 
+#[derive(Debug)]
 pub struct FileRow {
     pub cid: Vec<u8>,
     pub size: i64,
     pub mimetype: Option<String>,
 }
 
-#[derive(Debug)]
 pub struct TagMapRow {
     pub file_cid: Vec<u8>,
     pub tag_id: i32,
@@ -642,6 +643,155 @@ impl Db {
         .collect();
 
         Ok(thumbnails)
+    }
+
+    pub async fn get_most_popular_tags_within_namespace_that_starts_with(&self, tag_constraints: Vec<crate::proto::TagQuery>, begins_with: &str) -> Result<Vec<(TagRow, i64)>> {
+        let mut params_bind = Vec::new();
+
+        let mut where_clauses = vec![];
+
+        let like_clause = format!("{}%", begins_with);
+        params_bind.push(like_clause);
+        where_clauses.push("t.Namespace LIKE ?".to_string());
+
+        for constraint in &tag_constraints {
+            let negation_clause = if constraint.negated { "NOT" } else { "" };
+
+            let namespace = constraint.namespace.clone().unwrap_or_else(|| "general".to_string());
+
+            params_bind.push(namespace);
+            params_bind.push(constraint.descriptor.clone());
+
+            let subquery = format!(r#"
+                {} EXISTS (
+                    SELECT 1 FROM TagMap tm
+                    INNER JOIN Tags tg ON tm.TagId = tg.Id
+                    WHERE tm.FileCid = f.Cid AND tg.Namespace = ? AND tg.Descriptor = ?
+                )"#,
+                negation_clause,
+            );
+            where_clauses.push(subquery);
+        }
+
+        let having_clause = if !tag_constraints.is_empty() {
+            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
+            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {}", non_negated_count)
+        } else {
+            String::new()
+        };
+
+        let sql_query = format!(r#"
+            SELECT t.Id, t.Namespace, t.Descriptor, COUNT(DISTINCT tm.FileCid) AS Associations FROM Tags t
+            INNER JOIN TagMap tm ON t.Id = tm.TagId
+            INNER JOIN Files f ON tm.FileCid = f.Cid
+            WHERE {}
+            GROUP BY t.Id
+            {}
+            LIMIT 10
+        "#, where_clauses.join(" AND "), having_clause);
+
+        let mut prepared_statement = sqlx::query(&sql_query);
+        for param in params_bind {
+            prepared_statement = prepared_statement.bind(param);
+        }
+
+        if !tag_constraints.is_empty() {
+            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
+            println!("{}", non_negated_count as i64);
+            prepared_statement = prepared_statement.bind(non_negated_count as i64);
+        }
+
+        let res = prepared_statement
+            .try_map(|r: SqliteRow| {
+                let associations: i64 = r.try_get("Associations")?;
+                let tag_row = TagRow {
+                    descriptor: r.try_get("Descriptor")?,
+                    namespace: r.try_get("Namespace")?,
+                    id: r.try_get("Id")?,
+                };
+                Ok((tag_row, associations))
+            })
+            .fetch_all(&self.executor)
+            .await?;
+
+        Ok(res)
+    }
+
+    pub async fn get_descriptors_that_start_with(&self, tag_constraints: Vec<crate::proto::TagQuery>, namespace: Option<String>, begins_with: &str) -> Result<Vec<(TagRow, i64)>> {
+        let mut params_bind = Vec::new();
+
+        let mut where_clauses = vec![];
+
+        let like_clause = format!("{}%", begins_with);
+        params_bind.push(like_clause);
+        where_clauses.push("t.Descriptor LIKE ?".to_string());
+
+        if let Some(n) = namespace {
+            params_bind.push(n);
+            where_clauses.push("t.Namespace = ?".to_string());
+        }
+
+        for constraint in &tag_constraints {
+            let negation_clause = if constraint.negated { "NOT" } else { "" };
+
+            let namespace = constraint.namespace.clone().unwrap_or_else(|| "general".to_string());
+
+            params_bind.push(namespace);
+            params_bind.push(constraint.descriptor.clone());
+
+            let subquery = format!(r#"
+                {} EXISTS (
+                    SELECT 1 FROM TagMap tm
+                    INNER JOIN Tags tg ON tm.TagId = tg.Id
+                    WHERE tm.FileCid = f.Cid AND tg.Namespace = ? AND tg.Descriptor = ?
+                )"#,
+                negation_clause,
+            );
+            where_clauses.push(subquery);
+        }
+
+        let having_clause = if !tag_constraints.is_empty() {
+            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
+            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {}", non_negated_count)
+        } else {
+            String::new()
+        };
+
+        let sql_query = format!(r#"
+            SELECT t.Id, t.Namespace, t.Descriptor, COUNT(DISTINCT tm.FileCid) AS Associations FROM Tags t
+            INNER JOIN TagMap tm ON t.Id = tm.TagId
+            INNER JOIN Files f ON tm.FileCid = f.Cid
+            WHERE {}
+            GROUP BY t.Id
+            {}
+            LIMIT 10
+        "#, where_clauses.join(" AND "), having_clause);
+
+        let mut prepared_statement = sqlx::query(&sql_query);
+        for param in params_bind {
+            prepared_statement = prepared_statement.bind(param);
+        }
+
+        if !tag_constraints.is_empty() {
+            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
+            println!("{}", non_negated_count as i64);
+            prepared_statement = prepared_statement.bind(non_negated_count as i64);
+        }
+
+        let res = prepared_statement
+            .try_map(|r: SqliteRow| {
+                let associations: i64 = r.try_get("Associations")?;
+                let tag_row = TagRow {
+                    descriptor: r.try_get("Descriptor")?,
+                    namespace: r.try_get("Namespace")?,
+                    id: r.try_get("Id")?,
+                };
+                Ok((tag_row, associations))
+            })
+            .fetch_all(&self.executor)
+            .await?;
+
+        Ok(res)
     }
 
     pub async fn random_file(&self, count: u32) -> Result<Vec<FileRow>> {
