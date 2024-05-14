@@ -3,6 +3,7 @@ use crate::local::{
 };
 use crate::proto::{File, Tag, Thumbnail};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -196,14 +197,14 @@ impl Runtime {
             )
             .await?;
 
-        suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        suggestions.sort_unstable_by(|a, b| b.count.cmp(&a.count));
 
         let ret = suggestions
             .into_iter()
             .map(|s| crate::proto::TagSuggestion {
-                namespace: Some(s.0.namespace),
-                descriptor: s.0.descriptor,
-                count: s.1,
+                namespace: Some(s.namespace),
+                descriptor: s.descriptor,
+                count: s.count,
                 distance: 0, // TODO Levenshtein distance
             })
             .collect();
@@ -211,45 +212,73 @@ impl Runtime {
         Ok(ret)
     }
 
+    pub async fn suggest_all_tags(
+        &self,
+    ) -> Result<Vec<crate::proto::TagSuggestion>> {
+        // CASE - User was typing a descriptor with a qualified namespace
+        let mut suggestions = self.db.get_most_popular_tags().await?;
+
+        suggestions.sort_unstable_by(|a, b| b.count.cmp(&a.count));
+
+        let ret = suggestions
+            .into_iter()
+            .map(|s| crate::proto::TagSuggestion {
+                namespace: Some(s.namespace),
+                descriptor: s.descriptor,
+                count: s.count,
+                distance: 0, // TODO Levenshtein distance
+            })
+            .collect();
+
+        Ok(ret)
+    }
     pub async fn suggest_tags_without_namespace(
         &self,
         existing_tags: &[crate::proto::TagQuery],
         suggest_string: &str,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
-        let mut suggestions = vec![];
+        // Hashed on tag ID because we don't want to return the same tag twice
+        let mut suggestions: HashMap<i32, crate::local::TagRowCount> =
+            HashMap::new();
+        let mut insert_suggest_hash = |s: crate::local::TagRowCount| {
+            suggestions.insert(s.id, s);
+        };
 
         // CASE - User was typing a namespace
-        suggestions.append(
-            &mut self
-                .db
-                .get_most_popular_tags_within_namespace_that_starts_with(
-                    existing_tags.clone(),
-                    suggest_string,
-                )
-                .await?,
-        );
+        self.db
+            .get_most_popular_tags_within_namespace_that_starts_with(
+                existing_tags,
+                suggest_string,
+            )
+            .await?
+            .into_iter()
+            .for_each(&mut insert_suggest_hash);
 
         // CASE - User was typing a descriptor without qualifying a namespace
-        suggestions.append(
-            &mut self
-                .db
-                .get_descriptors_that_start_with(
-                    existing_tags,
-                    None,
-                    suggest_string,
-                )
-                .await?,
-        );
+        self.db
+            .get_descriptors_that_start_with(
+                existing_tags,
+                None,
+                suggest_string,
+            )
+            .await?
+            .into_iter()
+            .for_each(&mut insert_suggest_hash);
 
-        suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut suggest_vec = suggestions
+            .values()
+            .cloned()
+            .collect::<Vec<crate::local::TagRowCount>>();
+        suggest_vec.sort_unstable_by(|a, b| b.count.cmp(&a.count));
+
         // suggestions.shrink_to(len);
 
-        let ret = suggestions
+        let ret = suggest_vec
             .into_iter()
             .map(|s| crate::proto::TagSuggestion {
-                namespace: Some(s.0.namespace),
-                descriptor: s.0.descriptor,
-                count: s.1,
+                namespace: Some(s.namespace),
+                descriptor: s.descriptor,
+                count: s.count,
                 distance: 0, // TODO Levenshtein distance
             })
             .collect();

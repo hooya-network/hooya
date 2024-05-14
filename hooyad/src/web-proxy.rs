@@ -60,7 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/local-file-page/:page_token", get(local_file_page))
         .route("/all-files/:page_token", get(all_files))
         .route("/search-files/:query/:page_token", get(search_files))
-        .route("/suggest-tag/:query", get(suggest_tag))
+        .route("/suggest-tag/:query", get(suggest_tag_with_query))
+        .route("/suggest-tag", get(suggest_tag))
         .with_state(state);
 
     axum::Server::bind(
@@ -568,11 +569,25 @@ async fn all_files(
     axum::Json(body).into_response()
 }
 
-async fn suggest_tag(
+async fn suggest_tag(State(state): State<AState>) -> impl IntoResponse {
+    let mut client = state.client;
+
+    let query = SuggestTagRequest {
+        tag_query: vec![],
+        suggest_string: "".to_string(),
+        max_suggest: 10,
+    };
+
+    let resp = client.suggest_tag(query).await.unwrap().into_inner();
+
+    axum::Json(resp).into_response()
+}
+async fn suggest_tag_with_query(
     State(state): State<AState>,
     Path(query): Path<String>,
 ) -> impl IntoResponse {
     let mut client = state.client;
+
     let tags: Vec<&str> = query.split(',').collect();
 
     let existing_tags = if tags.len() > 1 {
@@ -606,9 +621,30 @@ async fn suggest_tag(
         max_suggest: 10,
     };
 
-    let suggestions = client.suggest_tag(query).await.unwrap().into_inner();
+    let resp = client.suggest_tag(query).await.unwrap().into_inner();
 
-    axum::Json(suggestions).into_response()
+    let tag_constraints = resp.tag_constraints;
+    let tag_suggestion = resp
+        .tag_suggestion
+        .into_iter()
+        .filter(|t| {
+            // When constraints are added, filter those constraints from the
+            // result set. This could probably be handled somewhere else but
+            // we may not always want this behavior in the future
+            for c in &tag_constraints {
+                if c.namespace == t.namespace && c.descriptor == t.descriptor {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    axum::Json(hooya::proto::SuggestTagReply {
+        tag_constraints,
+        tag_suggestion,
+    })
+    .into_response()
 }
 
 async fn search_files(

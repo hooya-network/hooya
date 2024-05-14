@@ -5,7 +5,7 @@ use sqlx::{
 
 use crate::proto::{file::ExtFile, File, Tag};
 
-#[derive(Debug)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub struct TagRow {
     pub id: i32,
     pub namespace: String,
@@ -52,6 +52,14 @@ pub struct ThumbnailRow {
     pub width: i64,
     pub ratio: f64,
     pub is_animated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TagRowCount {
+    pub id: i32,
+    pub namespace: String,
+    pub descriptor: String,
+    pub count: i64,
 }
 
 pub struct Db {
@@ -652,11 +660,37 @@ impl Db {
         Ok(thumbnails)
     }
 
+    pub async fn get_most_popular_tags(&self) -> Result<Vec<TagRowCount>> {
+        let ret = sqlx::query(r#"
+            SELECT Id, Namespace, Descriptor, COUNT(*) AS Associations FROM Tags t
+            INNER JOIN TagMap tm ON t.Id = tm.TagId
+            GROUP BY t.Id
+            ORDER BY Associations DESC
+            LIMIT 10
+            "#)
+        .try_map(|r: SqliteRow| {
+            let count = r.try_get("Associations")?;
+            let descriptor = r.try_get("Descriptor")?;
+            let namespace = r.try_get("Namespace")?;
+            let id = r.try_get("Id")?;
+            Ok(TagRowCount {
+                id,
+                namespace,
+                descriptor,
+                count,
+            })
+        })
+        .fetch_all(&self.executor)
+        .await?;
+
+        Ok(ret)
+    }
+
     pub async fn get_most_popular_tags_within_namespace_that_starts_with(
         &self,
         tag_constraints: &[crate::proto::TagQuery],
         begins_with: &str,
-    ) -> Result<Vec<(TagRow, i64)>> {
+    ) -> Result<Vec<TagRowCount>> {
         let mut params_bind = Vec::new();
 
         let mut where_clauses = vec![];
@@ -727,13 +761,16 @@ impl Db {
 
         let res = prepared_statement
             .try_map(|r: SqliteRow| {
-                let associations: i64 = r.try_get("Associations")?;
-                let tag_row = TagRow {
-                    descriptor: r.try_get("Descriptor")?,
-                    namespace: r.try_get("Namespace")?,
-                    id: r.try_get("Id")?,
-                };
-                Ok((tag_row, associations))
+                let count = r.try_get("Associations")?;
+                let descriptor = r.try_get("Descriptor")?;
+                let namespace = r.try_get("Namespace")?;
+                let id = r.try_get("Id")?;
+                Ok(TagRowCount {
+                    id,
+                    count,
+                    namespace,
+                    descriptor,
+                })
             })
             .fetch_all(&self.executor)
             .await?;
@@ -746,7 +783,7 @@ impl Db {
         tag_constraints: &[crate::proto::TagQuery],
         namespace: Option<String>,
         begins_with: &str,
-    ) -> Result<Vec<(TagRow, i64)>> {
+    ) -> Result<Vec<TagRowCount>> {
         let mut params_bind = Vec::new();
 
         let mut where_clauses = vec![];
@@ -816,20 +853,22 @@ impl Db {
         if !tag_constraints.is_empty() {
             let non_negated_count =
                 tag_constraints.iter().filter(|tc| !tc.negated).count();
-            println!("{}", non_negated_count as i64);
             prepared_statement =
                 prepared_statement.bind(non_negated_count as i64);
         }
 
         let res = prepared_statement
             .try_map(|r: SqliteRow| {
-                let associations: i64 = r.try_get("Associations")?;
-                let tag_row = TagRow {
-                    descriptor: r.try_get("Descriptor")?,
-                    namespace: r.try_get("Namespace")?,
-                    id: r.try_get("Id")?,
-                };
-                Ok((tag_row, associations))
+                let count = r.try_get("Associations")?;
+                let descriptor = r.try_get("Descriptor")?;
+                let namespace = r.try_get("Namespace")?;
+                let id = r.try_get("Id")?;
+                Ok(TagRowCount {
+                    id,
+                    count,
+                    namespace,
+                    descriptor,
+                })
             })
             .fetch_all(&self.executor)
             .await?;
