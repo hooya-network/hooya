@@ -1,4 +1,6 @@
-use crate::local::{self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow};
+use crate::local::{
+    self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow,
+};
 use crate::proto::{File, Tag, Thumbnail};
 use anyhow::Result;
 use std::fs;
@@ -180,14 +182,18 @@ impl Runtime {
 
     pub async fn suggest_tags_within_namespace(
         &self,
-        existing_tags: Vec<crate::proto::TagQuery>,
+        existing_tags: &[crate::proto::TagQuery],
         within_namespace: String,
         incomplete_descriptor: String,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
         // CASE - User was typing a descriptor with a qualified namespace
         let mut suggestions = self
             .db
-            .get_descriptors_that_start_with(existing_tags, Some(within_namespace), &incomplete_descriptor)
+            .get_descriptors_that_start_with(
+                existing_tags,
+                Some(within_namespace),
+                &incomplete_descriptor,
+            )
             .await?;
 
         suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
@@ -207,22 +213,33 @@ impl Runtime {
 
     pub async fn suggest_tags_without_namespace(
         &self,
-        existing_tags: Vec<crate::proto::TagQuery>,
+        existing_tags: &[crate::proto::TagQuery],
         suggest_string: &str,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
         let mut suggestions = vec![];
 
         // CASE - User was typing a namespace
-        suggestions.append(&mut self
-            .db
-            .get_most_popular_tags_within_namespace_that_starts_with(existing_tags.clone(), suggest_string)
-            .await?);
+        suggestions.append(
+            &mut self
+                .db
+                .get_most_popular_tags_within_namespace_that_starts_with(
+                    existing_tags.clone(),
+                    suggest_string,
+                )
+                .await?,
+        );
 
         // CASE - User was typing a descriptor without qualifying a namespace
-        suggestions.append(&mut self
-            .db
-            .get_descriptors_that_start_with(existing_tags, None, suggest_string)
-            .await?);
+        suggestions.append(
+            &mut self
+                .db
+                .get_descriptors_that_start_with(
+                    existing_tags,
+                    None,
+                    suggest_string,
+                )
+                .await?,
+        );
 
         suggestions.sort_unstable_by(|a, b| b.1.cmp(&a.1));
         // suggestions.shrink_to(len);
@@ -253,7 +270,13 @@ impl Runtime {
 
         let files = self
             .db
-            .files_page(Some(query), page_size, page_number, sort_order, reverse_order)
+            .files_page(
+                Some(query),
+                page_size,
+                page_number,
+                sort_order,
+                reverse_order,
+            )
             .await?;
 
         let next_page_token = if page_number < 1 {
@@ -264,7 +287,6 @@ impl Runtime {
 
         Ok((files, next_page_token))
     }
-
 
     pub async fn all_files_page(
         &self,
@@ -318,7 +340,8 @@ impl Runtime {
         mimetype: &str,
     ) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
-        let video_metadata = crate::video::extract_video_metadata(&cid_store_path)?;
+        let video_metadata =
+            crate::video::extract_video_metadata(&cid_store_path)?;
         let video_width = video_metadata.width;
         let video_height = video_metadata.height;
         let video_duration = video_metadata.duration;
@@ -340,7 +363,8 @@ impl Runtime {
         let t_sizes_long_edge = vec![320, 640, 1280];
 
         for t_size_long_edge in t_sizes_long_edge {
-            if video_width < t_size_long_edge && video_height < t_size_long_edge {
+            if video_width < t_size_long_edge && video_height < t_size_long_edge
+            {
                 continue;
             }
 
@@ -516,8 +540,6 @@ impl Runtime {
                     is_animated: t.is_animated,
                 })
                 .collect();
-
-
 
             Some(crate::proto::file::ExtFile::Video(crate::proto::Video {
                 height: video_row.height.into(),

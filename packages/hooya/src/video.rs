@@ -1,17 +1,17 @@
-use std::{path::PathBuf, process::Command};
 use anyhow::Result;
+use std::{path::PathBuf, process::Command};
 
 pub fn preview(
     in_video: &PathBuf,
     out_file: &PathBuf,
     long_edge: u32,
 ) -> Result<(u32, u32)> {
-    let in_video_str = in_video.to_str().ok_or_else(|| {
-        anyhow::anyhow!("Invalid input path")
-    })?;
-    let out_file_str = out_file.to_str().ok_or_else(|| {
-        anyhow::anyhow!("Invalid output path")
-    })?;
+    let in_video_str = in_video
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid input path"))?;
+    let out_file_str = out_file
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid output path"))?;
 
     let video_metadata = extract_video_metadata(in_video)?;
     let width = video_metadata.width;
@@ -32,22 +32,15 @@ pub fn preview(
     if scaled_width % 2 > 0 {
         scaled_width += 1;
     } else if scaled_height % 2 > 0 {
-        scaled_height +=1;
+        scaled_height += 1;
     }
 
     // 8s preview with 2s snippets
     let step = duration / 5.0;
-    let timestamps = [
-        step,
-        2.0 * step,
-        3.0 * step,
-        4.0 * step,
-    ];
+    let timestamps = [step, 2.0 * step, 3.0 * step, 4.0 * step];
 
     let mut command = Command::new("ffmpeg");
-    command
-        .arg("-i").arg(in_video_str)
-        .arg("-y");
+    command.arg("-i").arg(in_video_str).arg("-y");
 
     /* We're really out here. We really do this.
      *
@@ -90,18 +83,21 @@ pub fn preview(
 }
 
 pub fn extract_video_metadata(in_video: &PathBuf) -> Result<VideoMetadata> {
-    let in_video_str = in_video.to_str().ok_or_else(|| {
-        anyhow::anyhow!("Invalid input path")
-    })?;
-
+    let in_video_str = in_video
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid input path"))?;
 
     // Get video duration, width, and height using `ffprobe`
     let output = Command::new("ffprobe")
         .args(&[
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,duration",
-            "-of", "default=noprint_wrappers=1",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,duration",
+            "-of",
+            "default=noprint_wrappers=1",
             in_video_str,
         ])
         .output();
@@ -121,24 +117,24 @@ pub fn extract_video_metadata(in_video: &PathBuf) -> Result<VideoMetadata> {
 
     for line in ffprobe_output.lines() {
         if line.starts_with("width=") {
-            width = line[6..].parse::<u32>().map_err(|_| {
-                anyhow::anyhow!("Invalid width format")
-            })?;
+            width = line[6..]
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("Invalid width format"))?;
         } else if line.starts_with("height=") {
-            height = line[7..].parse::<u32>().map_err(|_| {
-                anyhow::anyhow!("Invalid height format")
-            })?;
+            height = line[7..]
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("Invalid height format"))?;
         } else if line.starts_with("duration=") {
-            duration = line[9..].parse::<f64>().map_err(|_| {
-                anyhow::anyhow!("Invalid duration format")
-            })?;
+            duration = line[9..]
+                .parse::<f64>()
+                .map_err(|_| anyhow::anyhow!("Invalid duration format"))?;
         }
     }
 
     Ok(VideoMetadata {
         width,
         height,
-        duration
+        duration,
     })
 }
 

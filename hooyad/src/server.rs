@@ -3,11 +3,13 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    CidInfoReply, CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
-    FileChunk, ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
-    LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
-    ReimportReply, ReimportRequest, StreamToFilestoreReply, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest, AllFilesRequest, AllFilesReply, SearchRequest, SearchReply, SuggestTagRequest, SuggestTagReply,
+    AllFilesReply, AllFilesRequest, CidInfoReply, CidInfoRequest,
+    CidThumbnailRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
+    ForgetFileRequest, LocalFilePageReply, LocalFilePageRequest,
+    RandomLocalFileReply, RandomLocalFileRequest, ReimportReply,
+    ReimportRequest, SearchReply, SearchRequest, StreamToFilestoreReply,
+    SuggestTagReply, SuggestTagRequest, TagCidReply, TagCidRequest, TagsReply,
+    TagsRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -212,14 +214,19 @@ impl Control for IControl {
 
         let (files, next_page_token) = self
             .runtime
-            .all_files_page(req.page_size, req.page_token, req.sort_order, req.reverse_order)
+            .all_files_page(
+                req.page_size,
+                req.page_token,
+                req.sort_order,
+                req.reverse_order,
+            )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let resp = AllFilesReply {
             files,
             total_pages: "TODO".to_string(),
-            next_page_token
+            next_page_token,
         };
 
         Ok(Response::new(resp))
@@ -291,18 +298,26 @@ impl Control for IControl {
         r: Request<SearchRequest>,
     ) -> Result<Response<SearchReply>, Status> {
         let req = r.into_inner();
-        let search_query = req.search_query.ok_or_else(|| Status::invalid_argument("No query specified"))?;
+        let search_query = req
+            .search_query
+            .ok_or_else(|| Status::invalid_argument("No query specified"))?;
 
         let (files, next_page_token) = self
             .runtime
-            .search_page(search_query, req.page_size, req.page_token, req.sort_order, req.reverse_order)
+            .search_page(
+                search_query,
+                req.page_size,
+                req.page_token,
+                req.sort_order,
+                req.reverse_order,
+            )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let resp = SearchReply {
             files,
             total_pages: "TODO".to_string(),
-            next_page_token
+            next_page_token,
         };
 
         Ok(Response::new(resp))
@@ -317,24 +332,24 @@ impl Control for IControl {
         let suggest_string = req.suggest_string;
 
         let tag_suggestion = match suggest_string.split_once(":") {
-            Some((namespace, incomplete_descriptor)) => {
-                self
-                    .runtime
-                    .suggest_tags_within_namespace(
-                        existing_tags, namespace.to_string(), incomplete_descriptor.to_string())
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?
-           }
-            None => {
-                self
-                    .runtime
-                    .suggest_tags_without_namespace(existing_tags, &suggest_string)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?
-            }
+            Some((namespace, incomplete_descriptor)) => self
+                .runtime
+                .suggest_tags_within_namespace(
+                    &existing_tags,
+                    namespace.to_string(),
+                    incomplete_descriptor.to_string(),
+                )
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?,
+            None => self
+                .runtime
+                .suggest_tags_without_namespace(&existing_tags, &suggest_string)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?,
         };
 
         let resp = SuggestTagReply {
+            tag_constraints: existing_tags,
             tag_suggestion,
         };
 

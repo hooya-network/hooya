@@ -3,7 +3,7 @@ use sqlx::{
     sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool,
 };
 
-use crate::proto::{Tag, File, file::ExtFile};
+use crate::proto::{file::ExtFile, File, Tag};
 
 #[derive(Debug)]
 pub struct TagRow {
@@ -492,12 +492,14 @@ impl Db {
                     if q.negated {
                         where_clause.push_str(" NOT ")
                     }
-                    where_clause.push_str("(t.Namespace = ? AND t.Descriptor = ?)");
+                    where_clause
+                        .push_str("(t.Namespace = ? AND t.Descriptor = ?)");
                 }
             }
 
             let distinct_tag_count = q.tag_query.len();
-            sql_query = format!(r#"
+            sql_query = format!(
+                r#"
                 SELECT
                     f.Cid,
                     f.Size,
@@ -521,29 +523,27 @@ impl Db {
                 HAVING COUNT(DISTINCT t.Id) = {}
                 {}
                 LIMIT ? OFFSET ?
-            "#, where_clause, distinct_tag_count, order_clause);
+            "#,
+                where_clause, distinct_tag_count, order_clause
+            );
 
             // Bind namespace:descriptor parameters defined earlier
             let mut query = sqlx::query(&sql_query);
             for tag in q.tag_query {
-                let namespace = tag.namespace
+                let namespace = tag
+                    .namespace
                     .unwrap_or("general".to_string())
                     .to_ascii_lowercase();
-                let descriptor = tag
-                    .descriptor
-                    .to_ascii_lowercase();
+                let descriptor = tag.descriptor.to_ascii_lowercase();
 
-                query = query
-                    .bind(namespace)
-                    .bind(descriptor);
+                query = query.bind(namespace).bind(descriptor);
             }
 
             // Lastly bind the pagination parameters
-            query
-                .bind(page_size)
-                .bind(offset)
+            query.bind(page_size).bind(offset)
         } else {
-            sql_query = format!(r#"
+            sql_query = format!(
+                r#"
                 SELECT
                     f.Cid,
                     f.Size,
@@ -562,22 +562,23 @@ impl Db {
                 LEFT JOIN Videos v ON f.Cid = v.Cid
                 {}
                 LIMIT ? OFFSET ?
-            "#, order_clause);
+            "#,
+                order_clause
+            );
 
-            sqlx::query(&sql_query)
-                .bind(page_size)
-                .bind(offset)
+            sqlx::query(&sql_query).bind(page_size).bind(offset)
         };
 
-        let raw_files = prepared_statement
-            .fetch_all(&self.executor)
-            .await?;
+        let raw_files = prepared_statement.fetch_all(&self.executor).await?;
 
         let mut files: Vec<File> = Vec::with_capacity(raw_files.len());
         for raw_file in raw_files.into_iter() {
-            let thumbnails = self.fetch_thumbnails_for(raw_file.try_get("Cid")?).await?;
-            let ext_file = if let Ok(height) = raw_file.try_get("ImageHeight?") {
-                let colors = raw_file.try_get::<Vec<u8>, _>("ImageColors?")?
+            let thumbnails =
+                self.fetch_thumbnails_for(raw_file.try_get("Cid")?).await?;
+            let ext_file = if let Ok(height) = raw_file.try_get("ImageHeight?")
+            {
+                let colors = raw_file
+                    .try_get::<Vec<u8>, _>("ImageColors?")?
                     .chunks(3)
                     .map(|c| c.into())
                     .collect();
@@ -611,7 +612,10 @@ impl Db {
         Ok(files)
     }
 
-    async fn fetch_thumbnails_for(&self, source_cid: &[u8]) -> Result<Vec<crate::proto::Thumbnail>> {
+    async fn fetch_thumbnails_for(
+        &self,
+        source_cid: &[u8],
+    ) -> Result<Vec<crate::proto::Thumbnail>> {
         let thumbnails = sqlx::query(
             r#"
             SELECT
@@ -625,18 +629,21 @@ impl Db {
                 IsAnimated
             FROM Thumbnails
             WHERE SourceCid = ?
-            "#)
+            "#,
+        )
         .bind(source_cid)
-        .try_map(|t: SqliteRow| Ok(crate::proto::Thumbnail {
-            cid: t.try_get("Cid")?,
-            size: t.try_get("Size")?,
-            mimetype: t.try_get("Mimetype")?,
-            source_cid: t.try_get("SourceCid")?,
-            height: t.try_get("Height")?,
-            width: t.try_get("Width")?,
-            aspect_ratio: t.try_get("Ratio")?,
-            is_animated: t.try_get("IsAnimated")?,
-        }))
+        .try_map(|t: SqliteRow| {
+            Ok(crate::proto::Thumbnail {
+                cid: t.try_get("Cid")?,
+                size: t.try_get("Size")?,
+                mimetype: t.try_get("Mimetype")?,
+                source_cid: t.try_get("SourceCid")?,
+                height: t.try_get("Height")?,
+                width: t.try_get("Width")?,
+                aspect_ratio: t.try_get("Ratio")?,
+                is_animated: t.try_get("IsAnimated")?,
+            })
+        })
         .fetch_all(&self.executor)
         .await?
         .into_iter()
@@ -645,7 +652,11 @@ impl Db {
         Ok(thumbnails)
     }
 
-    pub async fn get_most_popular_tags_within_namespace_that_starts_with(&self, tag_constraints: Vec<crate::proto::TagQuery>, begins_with: &str) -> Result<Vec<(TagRow, i64)>> {
+    pub async fn get_most_popular_tags_within_namespace_that_starts_with(
+        &self,
+        tag_constraints: &[crate::proto::TagQuery],
+        begins_with: &str,
+    ) -> Result<Vec<(TagRow, i64)>> {
         let mut params_bind = Vec::new();
 
         let mut where_clauses = vec![];
@@ -654,15 +665,19 @@ impl Db {
         params_bind.push(like_clause);
         where_clauses.push("t.Namespace LIKE ?".to_string());
 
-        for constraint in &tag_constraints {
+        for constraint in tag_constraints {
             let negation_clause = if constraint.negated { "NOT" } else { "" };
 
-            let namespace = constraint.namespace.clone().unwrap_or_else(|| "general".to_string());
+            let namespace = constraint
+                .namespace
+                .clone()
+                .unwrap_or_else(|| "general".to_string());
 
             params_bind.push(namespace);
             params_bind.push(constraint.descriptor.clone());
 
-            let subquery = format!(r#"
+            let subquery = format!(
+                r#"
                 {} EXISTS (
                     SELECT 1 FROM TagMap tm
                     INNER JOIN Tags tg ON tm.TagId = tg.Id
@@ -674,13 +689,18 @@ impl Db {
         }
 
         let having_clause = if !tag_constraints.is_empty() {
-            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
-            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {}", non_negated_count)
+            let non_negated_count =
+                tag_constraints.iter().filter(|tc| !tc.negated).count();
+            format!(
+                "HAVING COUNT(DISTINCT tm.FileCid) >= {}",
+                non_negated_count
+            )
         } else {
             String::new()
         };
 
-        let sql_query = format!(r#"
+        let sql_query = format!(
+            r#"
             SELECT t.Id, t.Namespace, t.Descriptor, COUNT(DISTINCT tm.FileCid) AS Associations FROM Tags t
             INNER JOIN TagMap tm ON t.Id = tm.TagId
             INNER JOIN Files f ON tm.FileCid = f.Cid
@@ -688,7 +708,10 @@ impl Db {
             GROUP BY t.Id
             {}
             LIMIT 10
-        "#, where_clauses.join(" AND "), having_clause);
+        "#,
+            where_clauses.join(" AND "),
+            having_clause
+        );
 
         let mut prepared_statement = sqlx::query(&sql_query);
         for param in params_bind {
@@ -696,9 +719,10 @@ impl Db {
         }
 
         if !tag_constraints.is_empty() {
-            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
-            println!("{}", non_negated_count as i64);
-            prepared_statement = prepared_statement.bind(non_negated_count as i64);
+            let non_negated_count =
+                tag_constraints.iter().filter(|tc| !tc.negated).count();
+            prepared_statement =
+                prepared_statement.bind(non_negated_count as i64);
         }
 
         let res = prepared_statement
@@ -717,7 +741,12 @@ impl Db {
         Ok(res)
     }
 
-    pub async fn get_descriptors_that_start_with(&self, tag_constraints: Vec<crate::proto::TagQuery>, namespace: Option<String>, begins_with: &str) -> Result<Vec<(TagRow, i64)>> {
+    pub async fn get_descriptors_that_start_with(
+        &self,
+        tag_constraints: &[crate::proto::TagQuery],
+        namespace: Option<String>,
+        begins_with: &str,
+    ) -> Result<Vec<(TagRow, i64)>> {
         let mut params_bind = Vec::new();
 
         let mut where_clauses = vec![];
@@ -731,15 +760,19 @@ impl Db {
             where_clauses.push("t.Namespace = ?".to_string());
         }
 
-        for constraint in &tag_constraints {
+        for constraint in tag_constraints {
             let negation_clause = if constraint.negated { "NOT" } else { "" };
 
-            let namespace = constraint.namespace.clone().unwrap_or_else(|| "general".to_string());
+            let namespace = constraint
+                .namespace
+                .clone()
+                .unwrap_or_else(|| "general".to_string());
 
             params_bind.push(namespace);
             params_bind.push(constraint.descriptor.clone());
 
-            let subquery = format!(r#"
+            let subquery = format!(
+                r#"
                 {} EXISTS (
                     SELECT 1 FROM TagMap tm
                     INNER JOIN Tags tg ON tm.TagId = tg.Id
@@ -751,13 +784,18 @@ impl Db {
         }
 
         let having_clause = if !tag_constraints.is_empty() {
-            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
-            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {}", non_negated_count)
+            let non_negated_count =
+                tag_constraints.iter().filter(|tc| !tc.negated).count();
+            format!(
+                "HAVING COUNT(DISTINCT tm.FileCid) >= {}",
+                non_negated_count
+            )
         } else {
             String::new()
         };
 
-        let sql_query = format!(r#"
+        let sql_query = format!(
+            r#"
             SELECT t.Id, t.Namespace, t.Descriptor, COUNT(DISTINCT tm.FileCid) AS Associations FROM Tags t
             INNER JOIN TagMap tm ON t.Id = tm.TagId
             INNER JOIN Files f ON tm.FileCid = f.Cid
@@ -765,7 +803,10 @@ impl Db {
             GROUP BY t.Id
             {}
             LIMIT 10
-        "#, where_clauses.join(" AND "), having_clause);
+        "#,
+            where_clauses.join(" AND "),
+            having_clause
+        );
 
         let mut prepared_statement = sqlx::query(&sql_query);
         for param in params_bind {
@@ -773,9 +814,11 @@ impl Db {
         }
 
         if !tag_constraints.is_empty() {
-            let non_negated_count = tag_constraints.iter().filter(|tc| !tc.negated).count();
+            let non_negated_count =
+                tag_constraints.iter().filter(|tc| !tc.negated).count();
             println!("{}", non_negated_count as i64);
-            prepared_statement = prepared_statement.bind(non_negated_count as i64);
+            prepared_statement =
+                prepared_statement.bind(non_negated_count as i64);
         }
 
         let res = prepared_statement

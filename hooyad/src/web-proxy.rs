@@ -9,8 +9,10 @@ use axum::{
 use clap::{command, Arg};
 use dotenv::dotenv;
 use hooya::proto::{
-    control_client::ControlClient, CidInfoRequest, CidThumbnailRequest,
-    ContentAtCidRequest, Thumbnail, Tag, TagsRequest, LocalFilePageRequest, AllFilesRequest, SearchRequest, TagQuery, SearchQuery, SuggestTagRequest
+    control_client::ControlClient, AllFilesRequest, CidInfoRequest,
+    CidThumbnailRequest, ContentAtCidRequest, LocalFilePageRequest,
+    SearchQuery, SearchRequest, SuggestTagRequest, Tag, TagQuery, TagsRequest,
+    Thumbnail,
 };
 use tonic::transport::Channel;
 mod config;
@@ -438,9 +440,7 @@ async fn cid_tags(
     let mut client = state.client;
 
     let tags: Vec<Tag> = client
-        .tags(TagsRequest{
-            cid,
-        })
+        .tags(TagsRequest { cid })
         .await
         .unwrap()
         .into_inner()
@@ -464,9 +464,7 @@ async fn cid_info(
     let mut client = state.client;
 
     let info: Option<hooya::proto::File> = client
-        .cid_info(CidInfoRequest{
-            cid,
-        })
+        .cid_info(CidInfoRequest { cid })
         .await
         .unwrap()
         .into_inner()
@@ -474,8 +472,10 @@ async fn cid_info(
 
     let info = match info {
         Some(i) => i,
-        _ => return (axum::http::StatusCode::BAD_REQUEST, "No Info")
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "No Info")
                 .into_response()
+        }
     };
 
     let cid = hooya::cid::encode(info.cid);
@@ -500,7 +500,7 @@ async fn local_file_page(
     let mut client = state.client;
 
     let local_file_page_resp = client
-        .local_file_page(LocalFilePageRequest{
+        .local_file_page(LocalFilePageRequest {
             oldest_first: false,
             page_token,
             page_size: 20,
@@ -531,7 +531,7 @@ async fn all_files(
     let mut client = state.client;
 
     let all_files_resp = client
-        .all_files(AllFilesRequest{
+        .all_files(AllFilesRequest {
             sort_order: 0,
             reverse_order: false,
             page_token,
@@ -540,7 +540,6 @@ async fn all_files(
         .await
         .unwrap()
         .into_inner();
-
 
     let next_page_token = all_files_resp.next_page_token;
     let files = all_files_resp
@@ -574,8 +573,7 @@ async fn suggest_tag(
     Path(query): Path<String>,
 ) -> impl IntoResponse {
     let mut client = state.client;
-    let tags: Vec<&str> = query.split(',')
-        .collect();
+    let tags: Vec<&str> = query.split(',').collect();
 
     let existing_tags = if tags.len() > 1 {
         tags[..tags.len() - 1].to_vec()
@@ -585,19 +583,17 @@ async fn suggest_tag(
 
     let existing_tags = existing_tags
         .iter()
-        .map(|t| {
-            match t.split_once(':') {
-                Some((namespace, descriptor)) => TagQuery {
-                    namespace: Some(namespace.to_string()),
-                    descriptor: descriptor.to_string(),
-                    negated: false,
-                },
-                None => TagQuery {
-                    namespace: None,
-                    descriptor: t.to_string(),
-                    negated: false,
-                }
-            }
+        .map(|t| match t.split_once(':') {
+            Some((namespace, descriptor)) => TagQuery {
+                namespace: Some(namespace.to_string()),
+                descriptor: descriptor.to_string(),
+                negated: false,
+            },
+            None => TagQuery {
+                namespace: None,
+                descriptor: t.to_string(),
+                negated: false,
+            },
         })
         .collect();
 
@@ -610,11 +606,7 @@ async fn suggest_tag(
         max_suggest: 10,
     };
 
-    let suggestions = client.suggest_tag(query)
-        .await
-        .unwrap()
-        .into_inner()
-        .tag_suggestion;
+    let suggestions = client.suggest_tag(query).await.unwrap().into_inner();
 
     axum::Json(suggestions).into_response()
 }
@@ -625,7 +617,8 @@ async fn search_files(
 ) -> impl IntoResponse {
     let mut client = state.client;
 
-    let tag_query = query.split(',')
+    let tag_query = query
+        .split(',')
         .map(|t| {
             if let Some((namespace, descriptor)) = t.split_once(':') {
                 (Some(namespace.to_string()), descriptor.to_string())
@@ -633,12 +626,10 @@ async fn search_files(
                 (None, t.to_string())
             }
         })
-        .map(|(namespace, descriptor)| {
-            TagQuery {
-                namespace,
-                descriptor,
-                negated: false,
-            }
+        .map(|(namespace, descriptor)| TagQuery {
+            namespace,
+            descriptor,
+            negated: false,
         })
         .collect();
 
@@ -651,7 +642,7 @@ async fn search_files(
     };
 
     let all_files_resp = client
-        .search(SearchRequest{
+        .search(SearchRequest {
             search_query: Some(search_query),
             sort_order: 0,
             reverse_order: false,
@@ -661,7 +652,6 @@ async fn search_files(
         .await
         .unwrap()
         .into_inner();
-
 
     let next_page_token = all_files_resp.next_page_token;
     let files = all_files_resp
@@ -691,7 +681,7 @@ async fn search_files(
 }
 
 mod proxy_response {
-use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
     pub struct LocalFilePageResponse {
@@ -753,22 +743,32 @@ use serde::{Serialize, Deserialize};
     impl From<hooya::proto::file::ExtFile> for ExtFile {
         fn from(e: hooya::proto::file::ExtFile) -> Self {
             match e {
-                hooya::proto::file::ExtFile::Image(i) =>
+                hooya::proto::file::ExtFile::Image(i) => {
                     ExtFile::Image(Image {
                         height: i.height,
                         width: i.width,
                         aspect_ratio: i.aspect_ratio,
                         colors: i.colors,
-                        thumbnails: i.thumbnails.into_iter().map(|t| t.into()).collect(),
-                    }),
-                hooya::proto::file::ExtFile::Video(v) =>
+                        thumbnails: i
+                            .thumbnails
+                            .into_iter()
+                            .map(|t| t.into())
+                            .collect(),
+                    })
+                }
+                hooya::proto::file::ExtFile::Video(v) => {
                     ExtFile::Video(Video {
                         height: v.height,
                         width: v.width,
                         aspect_ratio: v.aspect_ratio,
                         duration: v.duration,
-                        thumbnails: v.thumbnails.into_iter().map(|t| t.into()).collect(),
-                    }),
+                        thumbnails: v
+                            .thumbnails
+                            .into_iter()
+                            .map(|t| t.into())
+                            .collect(),
+                    })
+                }
             }
         }
     }

@@ -9,9 +9,9 @@ pub use chunked_reader::*;
 pub mod cid;
 pub mod client;
 pub mod image;
-pub mod video;
 pub mod local;
 pub mod runtime;
+pub mod video;
 
 impl From<&str> for proto::Tag {
     fn from(tag_str: &str) -> Self {
@@ -29,4 +29,3 @@ impl ToString for proto::Tag {
         vec![self.namespace.clone(), self.descriptor.clone()].join(":")
     }
 }
-
