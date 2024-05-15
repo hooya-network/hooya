@@ -1,5 +1,5 @@
 FROM rust:1.73.0-alpine as builder
-RUN apk add openssl-dev musl-dev protoc
+RUN apk add openssl-dev musl-dev protoc ffmpeg
 WORKDIR /wd
 COPY . /wd
 
