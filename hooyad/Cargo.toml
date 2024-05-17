@@ -17,9 +17,9 @@ name = "hooya-web-proxy"
 path = "src/web-proxy.rs"
 
 [dependencies]
-tonic = { version = "0.9" }
-axum = { version = "0.6.20", features = [ "json" ] }
-prost = { version = "0.11" }
+tonic = { version = "0.11" }
+axum = { version = "0.7", features = [ "json" ] }
+prost = { version = "0.12" }
 tokio = { version = "1.0", features = [ "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1" }
 hooya = { path = "../packages/hooya" }
@@ -30,5 +30,6 @@ rand = "0.8"
 dotenv = "0.15"
 anyhow = "1.0"
 futures-util = "0.3"
+futures = "0.3"
 async-stream = "0.3"
 serde = { version = "1.0", features = [ "derive" ] }

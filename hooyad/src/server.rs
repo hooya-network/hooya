@@ -331,7 +331,7 @@ impl Control for IControl {
         let existing_tags = req.tag_query;
         let suggest_string = req.suggest_string;
 
-        let tag_suggestion = match suggest_string.split_once(":") {
+        let tag_suggestion = match suggest_string.split_once(':') {
             Some((namespace, incomplete_descriptor)) => self
                 .runtime
                 .suggest_tags_within_namespace(
@@ -342,7 +342,7 @@ impl Control for IControl {
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?,
             None => {
-                if !existing_tags.is_empty() {
+                if existing_tags.len() > 0 || suggest_string.len() > 0 {
                     self.runtime
                         .suggest_tags_without_namespace(
                             &existing_tags,

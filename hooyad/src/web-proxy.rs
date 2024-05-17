@@ -8,6 +8,7 @@ use axum::{
 };
 use clap::{command, Arg};
 use dotenv::dotenv;
+use futures_util::TryStreamExt;
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, CidInfoRequest,
     CidThumbnailRequest, ContentAtCidRequest, LocalFilePageRequest,
@@ -64,16 +65,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/suggest-tag", get(suggest_tag))
         .with_state(state);
 
-    axum::Server::bind(
-        &matches
+    let listener = tokio::net::TcpListener::bind::<String>(
+        matches
             .get_one::<String>("proxy-endpoint")
             .unwrap()
             .parse()
             .unwrap(),
     )
-    .serve(app.into_make_service())
     .await
     .unwrap();
+
+    axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }
@@ -91,17 +93,14 @@ async fn cid_content(
     };
 
     let mut client = state.client;
-    let mut chunk_stream = client
+    let chunk_stream = client
         .content_at_cid(ContentAtCidRequest { cid: cid.clone() })
         .await
         .unwrap()
-        .into_inner();
-
-    let mut body = vec![];
-    while let Some(mut m) = chunk_stream.message().await.unwrap() {
-        // TODO Stream body
-        body.append(&mut m.data);
-    }
+        .into_inner()
+        .into_stream()
+        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let body = axum::body::Body::from_stream(chunk_stream);
 
     let file_info = client
         .cid_info(CidInfoRequest { cid })
@@ -185,20 +184,16 @@ async fn cid_thumbnail_medium(
     .try_into()
     .unwrap();
 
-    let mut chunk_stream = client
+    let chunk_stream = client
         .cid_thumbnail(CidThumbnailRequest {
             source_cid: cid,
             long_edge,
         })
         .await
         .unwrap()
-        .into_inner();
-
-    let mut body = vec![];
-    while let Some(mut m) = chunk_stream.message().await.unwrap() {
-        // TODO Stream body
-        body.append(&mut m.data);
-    }
+        .into_inner()
+        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let body = axum::body::Body::from_stream(chunk_stream);
 
     headers.append(
         axum::http::header::CACHE_CONTROL,
@@ -270,20 +265,16 @@ async fn cid_thumbnail_small(
     .try_into()
     .unwrap();
 
-    let mut chunk_stream = client
+    let chunk_stream = client
         .cid_thumbnail(CidThumbnailRequest {
             source_cid: cid,
             long_edge,
         })
         .await
         .unwrap()
-        .into_inner();
-
-    let mut body = vec![];
-    while let Some(mut m) = chunk_stream.message().await.unwrap() {
-        // TODO Stream body
-        body.append(&mut m.data);
-    }
+        .into_inner()
+        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let body = axum::body::Body::from_stream(chunk_stream);
 
     headers.append(
         axum::http::header::CACHE_CONTROL,
@@ -362,20 +353,16 @@ async fn cid_thumbnail(
         }
     };
 
-    let mut chunk_stream = client
+    let chunk_stream = client
         .cid_thumbnail(CidThumbnailRequest {
             source_cid: cid,
             long_edge,
         })
         .await
         .unwrap()
-        .into_inner();
-
-    let mut body = vec![];
-    while let Some(mut m) = chunk_stream.message().await.unwrap() {
-        // TODO Stream body
-        body.append(&mut m.data);
-    }
+        .into_inner()
+        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let body = axum::body::Body::from_stream(chunk_stream);
 
     headers.append(
         axum::http::header::CACHE_CONTROL,
@@ -822,5 +809,13 @@ mod proxy_response {
                 is_animated: t.is_animated,
             }
         }
+    }
+}
+
+struct FileChunk(hooya::proto::FileChunk);
+
+impl From<FileChunk> for axum::body::Bytes {
+    fn from(value: FileChunk) -> Self {
+        value.0.data.into()
     }
 }

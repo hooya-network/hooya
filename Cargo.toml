@@ -1,5 +1,6 @@
 [workspace]
 members = ["hooyad", "hooya-gtk", "packages/*"]
+resolver = "2"
 
 [profile.release]
 opt-level = 3

@@ -1,9 +1,9 @@
 use anyhow::Result;
-use std::{path::PathBuf, process::Command};
+use std::{path::Path, process::Command};
 
 pub fn preview(
-    in_video: &PathBuf,
-    out_file: &PathBuf,
+    in_video: &Path,
+    out_file: &Path,
     long_edge: u32,
 ) -> Result<(u32, u32)> {
     let in_video_str = in_video
@@ -48,7 +48,7 @@ pub fn preview(
      * does exactly what I want for now.
      */
 
-    command.args(&[
+    command.args([
         "-filter_complex",
         &format!(
             "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[clip1];[0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[clip2];[0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[clip3];[0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[clip4];[clip1][clip2][clip3][clip4]concat=n=4:v=1:a=0[outv]",
@@ -82,14 +82,14 @@ pub fn preview(
     }
 }
 
-pub fn extract_video_metadata(in_video: &PathBuf) -> Result<VideoMetadata> {
+pub fn extract_video_metadata(in_video: &Path) -> Result<VideoMetadata> {
     let in_video_str = in_video
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid input path"))?;
 
     // Get video duration, width, and height using `ffprobe`
     let output = Command::new("ffprobe")
-        .args(&[
+        .args([
             "-v",
             "error",
             "-select_streams",
@@ -116,16 +116,16 @@ pub fn extract_video_metadata(in_video: &PathBuf) -> Result<VideoMetadata> {
     let mut duration = 0.0;
 
     for line in ffprobe_output.lines() {
-        if line.starts_with("width=") {
-            width = line[6..]
+        if let Some(stripped) = line.strip_prefix("width=") {
+            width = stripped
                 .parse::<u32>()
                 .map_err(|_| anyhow::anyhow!("Invalid width format"))?;
-        } else if line.starts_with("height=") {
-            height = line[7..]
+        } else if let Some(stripped) = line.strip_prefix("height=") {
+            height = stripped
                 .parse::<u32>()
                 .map_err(|_| anyhow::anyhow!("Invalid height format"))?;
-        } else if line.starts_with("duration=") {
-            duration = line[9..]
+        } else if let Some(stripped) = line.strip_prefix("duration=") {
+            duration = stripped
                 .parse::<f64>()
                 .map_err(|_| anyhow::anyhow!("Invalid duration format"))?;
         }

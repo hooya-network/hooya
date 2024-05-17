@@ -197,6 +197,7 @@ async fn request_cid_thumbnail(
 
     let thumbs = match ext_file {
         hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
+        _ => todo!(),
     };
 
     let thumbnail = closest_thumbnail(&thumbs, 1280);
