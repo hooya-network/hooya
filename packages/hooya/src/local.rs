@@ -480,7 +480,7 @@ impl Db {
         page_number: u32,
         sort_order: i32,
         reverse_order: bool,
-    ) -> Result<Vec<File>> {
+    ) -> Result<(Vec<File>, u32)> {
         let offset = (page_number.saturating_sub(1)) * page_size;
 
         let order_clause = match (sort_order, reverse_order) {
@@ -490,6 +490,7 @@ impl Db {
         };
 
         let sql_query;
+        let count_sql_query;
         let prepared_statement = if let Some(q) = query {
             let mut where_clause = String::new();
             if !q.tag_query.is_empty() {
@@ -535,8 +536,22 @@ impl Db {
                 where_clause, distinct_tag_count, order_clause
             );
 
+            count_sql_query = format!(
+                r#"
+                SELECT COUNT(DISTINCT f.Cid) as total
+                FROM Files f
+                LEFT JOIN Images i ON f.Cid = i.Cid
+                LEFT JOIN Videos v ON f.Cid = v.Cid
+                INNER JOIN TagMap tm ON f.Cid = tm.FileCid
+                INNER JOIN Tags t ON t.Id = tm.TagId
+                WHERE {}
+            "#,
+                where_clause
+            );
+
             // Bind namespace:descriptor parameters defined earlier
             let mut query = sqlx::query(&sql_query);
+            let mut count_query = sqlx::query(&count_sql_query);
             for tag in q.tag_query {
                 let namespace = tag
                     .namespace
@@ -544,11 +559,14 @@ impl Db {
                     .to_ascii_lowercase();
                 let descriptor = tag.descriptor.to_ascii_lowercase();
 
-                query = query.bind(namespace).bind(descriptor);
+                query = query.bind(namespace.clone()).bind(descriptor.clone());
+                count_query = count_query.bind(namespace).bind(descriptor);
             }
 
             // Lastly bind the pagination parameters
-            query.bind(page_size).bind(offset)
+            query = query.bind(page_size).bind(offset);
+
+            (query, count_query)
         } else {
             sql_query = format!(
                 r#"
@@ -573,11 +591,26 @@ impl Db {
             "#,
                 order_clause
             );
+            count_sql_query =
+                r#"SELECT COUNT(*) as total FROM Files f"#.to_string();
 
-            sqlx::query(&sql_query).bind(page_size).bind(offset)
+            let query = sqlx::query(&sql_query).bind(page_size).bind(offset);
+            let count_query = sqlx::query(&count_sql_query);
+            (query, count_query)
         };
 
-        let raw_files = prepared_statement.fetch_all(&self.executor).await?;
+        let raw_files = prepared_statement.0.fetch_all(&self.executor).await?;
+
+        let total_count: u32 = prepared_statement
+            .1
+            .fetch_one(&self.executor)
+            .await?
+            .try_get("total")?;
+        let final_page_token = if total_count % page_size == 0 {
+            total_count / page_size
+        } else {
+            (total_count / page_size) + 1
+        };
 
         let mut files: Vec<File> = Vec::with_capacity(raw_files.len());
         for raw_file in raw_files.into_iter() {
@@ -617,7 +650,72 @@ impl Db {
             });
         }
 
-        Ok(files)
+        Ok((files, final_page_token))
+    }
+
+    pub async fn tags_page(
+        &self,
+        page_size: u32,
+        page_number: u32,
+        sort_order: i32,
+        reverse_order: bool,
+    ) -> Result<(Vec<TagRowCount>, u32)> {
+        let offset = (page_number.saturating_sub(1)) * page_size;
+
+        let order_clause = match (sort_order, reverse_order) {
+            (0, true) => "ORDER BY Count",
+            (0, false) => "ORDER BY Count DESC",
+            _ => return Err(anyhow::anyhow!("Invalid sort order")),
+        };
+
+        let total_count_query = r#"
+            SELECT COUNT(DISTINCT Id) as total_count
+            FROM Tags
+        "#;
+
+        let total_count_row = sqlx::query(total_count_query)
+            .fetch_one(&self.executor)
+            .await?;
+
+        let total_count: u32 = total_count_row.try_get("total_count")?;
+        let final_page_token = if page_size > 0 {
+            (total_count + page_size - 1) / page_size
+        } else {
+            1
+        };
+
+        let query = format!(
+            r#"
+                SELECT
+                    t.Id,
+                    t.Namespace,
+                    t.Descriptor,
+                    COUNT(*) as "Count"
+                FROM Tags t
+                INNER JOIN TagMap tm ON t.Id = tm.TagId
+                INNER JOIN Files f ON f.Cid = tm.FileCid
+                GROUP BY t.Id
+                {}
+                LIMIT ? OFFSET ?
+            "#,
+            order_clause
+        );
+
+        let prepared_statement = sqlx::query(&query)
+            .bind(page_size)
+            .bind(offset)
+            .try_map(|t: SqliteRow| {
+                Ok(TagRowCount {
+                    id: t.try_get("Id")?,
+                    namespace: t.try_get("Namespace")?,
+                    descriptor: t.try_get("Descriptor")?,
+                    count: t.try_get("Count")?,
+                })
+            });
+
+        let tags_info = prepared_statement.fetch_all(&self.executor).await?;
+
+        Ok((tags_info, final_page_token))
     }
 
     async fn fetch_thumbnails_for(

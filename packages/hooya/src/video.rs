@@ -17,6 +17,7 @@ pub fn preview(
     let width = video_metadata.width;
     let height = video_metadata.height;
     let duration = video_metadata.duration;
+    let audio_tracks = video_metadata.audio_tracks;
 
     // Calculate scale preserving aspect ratio
     let aspect_ratio = width as f64 / height as f64;
@@ -42,29 +43,67 @@ pub fn preview(
     let mut command = Command::new("ffmpeg");
     command.arg("-i").arg(in_video_str).arg("-y");
 
-    /* We're really out here. We really do this.
-     *
-     * Maybe can gut the ffmpeg dependency when I pull in OpenCV but this
-     * does exactly what I want for now.
-     */
-
-    command.args([
-        "-filter_complex",
-        &format!(
-            "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[clip1];[0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[clip2];[0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[clip3];[0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[clip4];[clip1][clip2][clip3][clip4]concat=n=4:v=1:a=0[outv]",
-            t1 = timestamps[0],
-            t2 = timestamps[0] + 2.0,
-            t3 = timestamps[1],
-            t4 = timestamps[1] + 2.0,
-            t5 = timestamps[2],
-            t6 = timestamps[2] + 2.0,
-            t7 = timestamps[3],
-            t8 = timestamps[3] + 2.0,
-            w = scaled_width,
-            h = scaled_height
-        ),
-        "-map", "[outv]"
-    ]);
+    // Don't snip previews if less than this 16s
+    if duration > 16.0 {
+        if audio_tracks > 0 {
+            // Sound on
+            command.args([
+                "-filter_complex",
+                &format!(
+                    "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
+                     [0:a]atrim=start={t1}:end={t2},asetpts=PTS-STARTPTS[a1];\
+                     [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
+                     [0:a]atrim=start={t3}:end={t4},asetpts=PTS-STARTPTS[a2];\
+                     [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
+                     [0:a]atrim=start={t5}:end={t6},asetpts=PTS-STARTPTS[a3];\
+                     [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
+                     [0:a]atrim=start={t7}:end={t8},asetpts=PTS-STARTPTS[a4];\
+                     [v1][a1][v2][a2][v3][a3][v4][a4]concat=n=4:v=1:a=1[outv][outa]",
+                    t1 = timestamps[0],
+                    t2 = timestamps[0] + 2.0,
+                    t3 = timestamps[1],
+                    t4 = timestamps[1] + 2.0,
+                    t5 = timestamps[2],
+                    t6 = timestamps[2] + 2.0,
+                    t7 = timestamps[3],
+                    t8 = timestamps[3] + 2.0,
+                    w = scaled_width,
+                    h = scaled_height
+                ),
+                "-map", "[outv]",
+                "-map", "[outa]"
+            ]);
+        } else {
+            // No sound
+            command.args([
+                "-filter_complex",
+                &format!(
+                    "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
+                     [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
+                     [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
+                     [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
+                     [v1][v2][v3][v4]concat=n=4:v=1:a=0[outv]",
+                    t1 = timestamps[0],
+                    t2 = timestamps[0] + 2.0,
+                    t3 = timestamps[1],
+                    t4 = timestamps[1] + 2.0,
+                    t5 = timestamps[2],
+                    t6 = timestamps[2] + 2.0,
+                    t7 = timestamps[3],
+                    t8 = timestamps[3] + 2.0,
+                    w = scaled_width,
+                    h = scaled_height
+                ),
+                "-map", "[outv]"
+            ]);
+        }
+    } else {
+        // Don't snip here because duration is short
+        command.args([
+            "-vf",
+            &format!("scale={w}:{h}", w = scaled_width, h = scaled_height),
+        ]);
+    }
 
     command
         .arg("-f")
@@ -131,10 +170,37 @@ pub fn extract_video_metadata(in_video: &Path) -> Result<VideoMetadata> {
         }
     }
 
+    // Determine the number of audio tracks
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=channels",
+            "-select_streams",
+            "a",
+            "-of",
+            "default=noprint_wrappers=1",
+            in_video_str,
+        ])
+        .output();
+
+    let output = output.map_err(|_| {
+        anyhow::anyhow!("`ffprobe was not found. Check your PATH!`")
+    })?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("Failed to fetch video information"));
+    }
+
+    let ffprobe_output = String::from_utf8(output.stdout)?;
+    let audio_tracks = ffprobe_output.lines().count() as u32;
+
     Ok(VideoMetadata {
         width,
         height,
         duration,
+        audio_tracks,
     })
 }
 
@@ -142,4 +208,5 @@ pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,
     pub duration: f64,
+    pub audio_tracks: u32,
 }

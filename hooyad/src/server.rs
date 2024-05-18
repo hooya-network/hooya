@@ -3,13 +3,13 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    AllFilesReply, AllFilesRequest, CidInfoReply, CidInfoRequest,
-    CidThumbnailRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
-    ForgetFileRequest, LocalFilePageReply, LocalFilePageRequest,
-    RandomLocalFileReply, RandomLocalFileRequest, ReimportReply,
-    ReimportRequest, SearchReply, SearchRequest, StreamToFilestoreReply,
-    SuggestTagReply, SuggestTagRequest, TagCidReply, TagCidRequest, TagsReply,
-    TagsRequest, VersionReply, VersionRequest,
+    AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, CidInfoReply,
+    CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest, FileChunk,
+    ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
+    LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
+    ReimportReply, ReimportRequest, SearchReply, SearchRequest,
+    StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest, TagCidReply,
+    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -212,7 +212,7 @@ impl Control for IControl {
     ) -> Result<Response<AllFilesReply>, Status> {
         let req = r.into_inner();
 
-        let (files, next_page_token) = self
+        let (files, next_page_token, final_page_token) = self
             .runtime
             .all_files_page(
                 req.page_size,
@@ -225,7 +225,33 @@ impl Control for IControl {
 
         let resp = AllFilesReply {
             files,
-            total_pages: "TODO".to_string(),
+            final_page_token: final_page_token.to_string(),
+            next_page_token,
+        };
+
+        Ok(Response::new(resp))
+    }
+
+    async fn all_tags(
+        &self,
+        r: Request<AllTagsRequest>,
+    ) -> Result<Response<AllTagsReply>, Status> {
+        let req = r.into_inner();
+
+        let (tags, next_page_token, final_page_token) = self
+            .runtime
+            .all_tags_page(
+                req.page_size,
+                req.page_token,
+                req.sort_order,
+                req.reverse_order,
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let resp = AllTagsReply {
+            tags,
+            final_page_token: final_page_token.to_string(),
             next_page_token,
         };
 
@@ -302,7 +328,7 @@ impl Control for IControl {
             .search_query
             .ok_or_else(|| Status::invalid_argument("No query specified"))?;
 
-        let (files, next_page_token) = self
+        let (files, next_page_token, final_page_token) = self
             .runtime
             .search_page(
                 search_query,
@@ -316,7 +342,7 @@ impl Control for IControl {
 
         let resp = SearchReply {
             files,
-            total_pages: "TODO".to_string(),
+            final_page_token: final_page_token.to_string(),
             next_page_token,
         };
 
@@ -342,7 +368,7 @@ impl Control for IControl {
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?,
             None => {
-                if existing_tags.len() > 0 || suggest_string.len() > 0 {
+                if !existing_tags.is_empty() || !suggest_string.is_empty() {
                     self.runtime
                         .suggest_tags_without_namespace(
                             &existing_tags,

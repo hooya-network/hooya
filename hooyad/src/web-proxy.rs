@@ -10,10 +10,10 @@ use clap::{command, Arg};
 use dotenv::dotenv;
 use futures_util::TryStreamExt;
 use hooya::proto::{
-    control_client::ControlClient, AllFilesRequest, CidInfoRequest,
-    CidThumbnailRequest, ContentAtCidRequest, LocalFilePageRequest,
-    SearchQuery, SearchRequest, SuggestTagRequest, Tag, TagQuery, TagsRequest,
-    Thumbnail,
+    control_client::ControlClient, AllFilesRequest, AllTagsRequest,
+    CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
+    LocalFilePageRequest, SearchQuery, SearchRequest, SuggestTagRequest, Tag,
+    TagQuery, TagsRequest, Thumbnail,
 };
 use tonic::transport::Channel;
 mod config;
@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/cid-info/:cid", get(cid_info))
         .route("/local-file-page/:page_token", get(local_file_page))
         .route("/all-files/:page_token", get(all_files))
+        .route("/all-tags/:page_token", get(all_tags))
         .route("/search-files/:query/:page_token", get(search_files))
         .route("/suggest-tag/:query", get(suggest_tag_with_query))
         .route("/suggest-tag", get(suggest_tag))
@@ -529,6 +530,7 @@ async fn all_files(
         .unwrap()
         .into_inner();
 
+    let final_page_token = all_files_resp.final_page_token;
     let next_page_token = all_files_resp.next_page_token;
     let files = all_files_resp
         .files
@@ -551,6 +553,51 @@ async fn all_files(
     let body = proxy_response::AllFilesResponse {
         files,
         next_page_token,
+        final_page_token,
+    };
+
+    axum::Json(body).into_response()
+}
+
+async fn all_tags(
+    State(state): State<AState>,
+    Path(page_token): Path<String>,
+) -> impl IntoResponse {
+    let mut client = state.client;
+
+    let all_tags_resp = client
+        .all_tags(AllTagsRequest {
+            sort_order: 0,
+            reverse_order: false,
+            page_token,
+            page_size: 50,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let next_page_token = all_tags_resp.next_page_token;
+    let final_page_token = all_tags_resp.final_page_token;
+    let tags = all_tags_resp
+        .tags
+        .into_iter()
+        .map(|info| {
+            let namespace = info.namespace;
+            let descriptor = info.descriptor;
+            let count = info.count;
+
+            proxy_response::TagInfo {
+                namespace,
+                descriptor,
+                count,
+            }
+        })
+        .collect();
+
+    let body = proxy_response::AllTagsResponse {
+        tags,
+        next_page_token,
+        final_page_token,
     };
 
     axum::Json(body).into_response()
@@ -664,7 +711,7 @@ async fn search_files(
         ext_attr: None,
     };
 
-    let all_files_resp = client
+    let search_files_resp = client
         .search(SearchRequest {
             search_query: Some(search_query),
             sort_order: 0,
@@ -676,8 +723,9 @@ async fn search_files(
         .unwrap()
         .into_inner();
 
-    let next_page_token = all_files_resp.next_page_token;
-    let files = all_files_resp
+    let final_page_token = search_files_resp.final_page_token;
+    let next_page_token = search_files_resp.next_page_token;
+    let files = search_files_resp
         .files
         .into_iter()
         .map(|info| {
@@ -698,6 +746,7 @@ async fn search_files(
     let body = proxy_response::AllFilesResponse {
         files,
         next_page_token,
+        final_page_token,
     };
 
     axum::Json(body).into_response()
@@ -716,6 +765,14 @@ mod proxy_response {
     pub struct AllFilesResponse {
         pub files: Vec<CidInfoResponse>,
         pub next_page_token: String,
+        pub final_page_token: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct AllTagsResponse {
+        pub tags: Vec<TagInfo>,
+        pub next_page_token: String,
+        pub final_page_token: String,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -724,6 +781,13 @@ mod proxy_response {
         pub size: i64,
         pub mimetype: Option<String>,
         pub ext_file: Option<ExtFile>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct TagInfo {
+        pub namespace: String,
+        pub descriptor: String,
+        pub count: i64,
     }
 
     #[derive(Serialize, Deserialize)]

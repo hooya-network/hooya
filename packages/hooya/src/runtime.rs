@@ -293,11 +293,11 @@ impl Runtime {
         page_token: String,
         sort_order: i32,
         reverse_order: bool,
-    ) -> Result<(Vec<crate::proto::File>, String)> {
+    ) -> Result<(Vec<crate::proto::File>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
 
-        let files = self
+        let (files, final_page_token) = self
             .db
             .files_page(
                 Some(query),
@@ -308,13 +308,13 @@ impl Runtime {
             )
             .await?;
 
-        let next_page_token = if page_number < 1 {
-            "2".to_string()
+        let next_page_token = if page_number >= final_page_token {
+            "".to_string()
         } else {
             (page_number + 1).to_string()
         };
 
-        Ok((files, next_page_token))
+        Ok((files, next_page_token, final_page_token))
     }
 
     pub async fn all_files_page(
@@ -323,21 +323,53 @@ impl Runtime {
         page_token: String,
         sort_order: i32,
         reverse_order: bool,
-    ) -> Result<(Vec<crate::proto::File>, String)> {
+    ) -> Result<(Vec<crate::proto::File>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
-        let files = self
+        let (files, final_page_token) = self
             .db
             .files_page(None, page_size, page_number, sort_order, reverse_order)
             .await?;
 
-        let next_page_token = if page_number < 1 {
-            "2".to_string()
+        let next_page_token = if page_number >= final_page_token {
+            "".to_string()
         } else {
             (page_number + 1).to_string()
         };
 
-        Ok((files, next_page_token))
+        Ok((files, next_page_token, final_page_token))
+    }
+
+    pub async fn all_tags_page(
+        &self,
+        page_size: u32,
+        page_token: String,
+        sort_order: i32,
+        reverse_order: bool,
+    ) -> Result<(Vec<crate::proto::TagInfo>, String, u32)> {
+        // I don't see a reason to not work with pages as simply numbers
+        let page_number: u32 = page_token.parse()?;
+        let (tags, final_page_token) = self
+            .db
+            .tags_page(page_size, page_number, sort_order, reverse_order)
+            .await?;
+
+        let tags_info = tags
+            .into_iter()
+            .map(|t| crate::proto::TagInfo {
+                count: t.count,
+                namespace: t.namespace,
+                descriptor: t.descriptor,
+            })
+            .collect();
+
+        let next_page_token = if page_number >= final_page_token {
+            "".to_string()
+        } else {
+            (page_number + 1).to_string()
+        };
+
+        Ok((tags_info, next_page_token, final_page_token))
     }
 
     pub async fn local_file_page(
