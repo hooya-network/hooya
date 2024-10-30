@@ -10,7 +10,7 @@ Installation
 Install dependencies yourself or use `nix-shell` to manage them.
 
 ```
-git clone git@github.com:hooya-network/hooya.git
+git clone --recurse-submodules git@github.com:hooya-network/hooya.git
 cd hooya
 nix-shell
 cargo build --release
