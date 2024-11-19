@@ -19,6 +19,8 @@
         devShells.default = with pkgs; mkShell {
           buildInputs = [
             rust-bin.stable."1.82.0".default
+            openssl
+            pkg-config
             ffmpeg
             git
             protobuf
