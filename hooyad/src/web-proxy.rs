@@ -288,12 +288,19 @@ async fn cid_thumbnail_small(
         thumbnail.mimetype.parse().unwrap(),
     );
 
-    let save_extension = mimetype_extension(&thumbnail.mimetype).unwrap();
+    let save_extension = mimetype_extension(&thumbnail.mimetype);
+    let filename = match save_extension {
+        Some(save_extension) =>
+            format!("{}_thumb{}.{}", encoded_cid, long_edge, save_extension),
+        None =>
+            format!("{}_thumb{}", encoded_cid, long_edge),
+    };
+
     headers.append(
         axum::http::header::CONTENT_DISPOSITION,
         format!(
-            "inline; filename=\"{}_thumb{}.{}\"",
-            encoded_cid, long_edge, save_extension
+            "inline; filename=\"{}\"",
+            filename,
         )
         .parse()
         .unwrap(),
