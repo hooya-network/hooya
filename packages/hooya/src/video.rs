@@ -106,10 +106,10 @@ pub fn preview(
     }
 
     command
+        .arg("-c:v")
+        .arg("libsvtav1")
         .arg("-f")
         .arg("mp4")
-        .arg("-movflags")
-        .arg("+faststart")
         .arg(out_file_str);
 
     // Execute command
