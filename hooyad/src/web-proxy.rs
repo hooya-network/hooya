@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/suggest-tag/:query", get(suggest_tag_with_query))
         .route("/suggest-tag", get(suggest_tag))
         .route("/login", post(login))
-        .route("/tag-cid", post(tag_cid))
+        .route("/tag-cid/:cid", post(tag_cid))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
@@ -154,13 +154,13 @@ fn validate_jwt(state: &AState, headers: HeaderMap) -> Result<ClaimData, impl In
 
 #[derive(Deserialize)]
 struct TagCidData {
-    encoded_cid: String,
     tags: Vec<Tag>,
 }
 
 async fn tag_cid(
     State(mut state): State<AState>,
     headers: HeaderMap,
+    Path(encoded_cid): Path<String>,
     Form(payload): Form<TagCidData>,
 ) -> impl IntoResponse {
     match validate_jwt(&state, headers) {
@@ -168,7 +168,7 @@ async fn tag_cid(
         _ => { } // valid
     }
 
-    let (_, cid) = match hooya::cid::decode(&payload.encoded_cid) {
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
         Ok(cid) => cid,
         _ => {
             return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
