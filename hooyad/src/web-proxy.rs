@@ -1,11 +1,8 @@
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
-    response::IntoResponse,
-    routing::get,
-    Router,
+    extract::{Path, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, routing::{get, post}, Form, Router
 };
+use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
 use clap::{command, Arg};
 use dotenv::dotenv;
 use futures_util::TryStreamExt;
@@ -15,15 +12,24 @@ use hooya::proto::{
     LocalFilePageRequest, SearchQuery, SearchRequest, SuggestTagRequest, Tag,
     TagQuery, TagsRequest, Thumbnail,
 };
+use serde::{Deserialize, Serialize};
 use tonic::transport::Channel;
+use rand::RngCore;
 mod config;
 
 #[derive(Clone)]
 struct AState {
     client: ControlClient<Channel>,
+    jwt_secret: [u8; 32],
 }
 
 pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
+
+fn generate_secret_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,12 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .get_matches();
 
+    let jwt_secret = generate_secret_key();
     let state = AState {
         client: ControlClient::connect(format!(
             "http://{}",
             matches.get_one::<String>("hooyad-endpoint").unwrap()
         ))
         .await?,
+        jwt_secret,
     };
 
     let app = Router::new()
@@ -64,6 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/search-files/:query/:page_token", get(search_files))
         .route("/suggest-tag/:query", get(suggest_tag_with_query))
         .route("/suggest-tag", get(suggest_tag))
+        .route("/login", post(login))
+        .route("/tag-cid", post(tag_cid))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
@@ -79,6 +89,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct LoginData {
+    password: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClaimData {
+    user_id: u64,
+    exp: usize,
+}
+
+async fn login(
+    State(state): State<AState>,
+    Form(payload): Form<LoginData>,
+) -> impl IntoResponse {
+    if payload.password == "password" {
+        let claims = ClaimData {
+            user_id: 1,
+            exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+        };
+
+        match encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(&state.jwt_secret),
+        ) {
+            Ok(token) => token.into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate token").into_response(),
+        }
+    } else {
+        (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
+    }
+}
+
+fn validate_jwt(state: &AState, headers: HeaderMap) -> Result<ClaimData, impl IntoResponse> {
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    let token = match auth_header {
+        Some(token) => token,
+        None => return Err((StatusCode::BAD_REQUEST, "Authorization header missing or invalid").into_response()),
+    };
+
+    let token_data = match decode::<ClaimData>(
+        token,
+        &DecodingKey::from_secret(&state.jwt_secret),
+        &Validation::new(Algorithm::HS256),
+    ) {
+        Ok(data) => data,
+        Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid token").into_response()),
+    };
+
+    if token_data.claims.exp < chrono::Utc::now().timestamp() as usize {
+        return Err((StatusCode::UNAUTHORIZED, "Expired token").into_response())
+    }
+
+    Ok(token_data.claims)
+}
+
+#[derive(Deserialize)]
+struct TagCidData {
+    encoded_cid: String,
+    tags: Vec<Tag>,
+}
+
+async fn tag_cid(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Form(payload): Form<TagCidData>,
+) -> impl IntoResponse {
+    match validate_jwt(&state, headers) {
+        Err(e) => return e.into_response(), // unauthorized (generally)
+        _ => { } // valid
+    }
+
+    let (_, cid) = match hooya::cid::decode(&payload.encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
+
+    let tags = payload.tags;
+    state.client.tag_cid(hooya::proto::TagCidRequest { cid, tags, })
+        .await
+        .unwrap();
+
+    StatusCode::CREATED.into_response()
 }
 
 async fn cid_content(
