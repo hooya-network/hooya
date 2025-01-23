@@ -106,7 +106,12 @@ async fn login(
     State(state): State<AState>,
     Form(payload): Form<LoginData>,
 ) -> impl IntoResponse {
-    if payload.password == "password" {
+    let password = match std::env::var("HOOYA_WEB_PASSWORD") {
+        Ok(value) => value,
+        Err(_) => return (StatusCode::PRECONDITION_FAILED, "").into_response(),
+    };
+
+    if payload.password == password { // plaintext cause fuck it
         let claims = ClaimData {
             user_id: 1,
             exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
