@@ -15,12 +15,7 @@ use hooya::runtime::Runtime;
 use rand::distributions::DistString;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Sqlite, SqlitePool};
-use std::{
-    fs::File,
-    io::Write,
-    path::PathBuf,
-    pin::Pin,
-};
+use std::{fs::File, io::Write, path::PathBuf, pin::Pin};
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -415,14 +410,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
         .get_matches();
 
-    // Apply XDG logic if using default path
-    let mut filestore_path = matches.get_one::<PathBuf>("filestore").unwrap().clone();
-    if filestore_path == PathBuf::from(".hooya") && !std::env::var("HOOYAD_FILESTORE").is_ok() {
-        if let Ok(xdg_pictures_dir) = std::env::var("XDG_PICTURES_DIR") {
-            let xdg_pictures_path = std::path::Path::new(&xdg_pictures_dir);
-            if xdg_pictures_path.is_dir() {
-                filestore_path = xdg_pictures_path.join("hooya");
-            }
+    // Apply cross-platform user directory logic if using default path
+    let mut filestore_path =
+        matches.get_one::<PathBuf>("filestore").unwrap().clone();
+    if filestore_path == PathBuf::from(".hooya")
+        && !std::env::var("HOOYAD_FILESTORE").is_ok()
+    {
+        if let Ok(data_dir) = user_dirs::data_dir() {
+            filestore_path = data_dir.join("hooya");
         }
     }
 
@@ -452,10 +447,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
-            runtime: Runtime {
-                filestore_path,
-                db,
-            },
+            runtime: Runtime { filestore_path, db },
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
