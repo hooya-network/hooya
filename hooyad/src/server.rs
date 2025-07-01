@@ -16,9 +16,9 @@ use rand::distributions::DistString;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Sqlite, SqlitePool};
 use std::{
-    fs::{create_dir_all, File},
+    fs::File,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
 };
 use tokio_stream::StreamExt;
@@ -398,23 +398,6 @@ impl Control for IControl {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    // Derive a path to use as filestore
-    let mut default_filestore_path = Path::new(".hooya").to_path_buf();
-    if let Ok(xdg_pictures_dir) = std::env::var("XDG_PICTURES_DIR") {
-        let xdg_pictures_path = Path::new(&xdg_pictures_dir);
-        if xdg_pictures_path.is_dir() {
-            default_filestore_path = xdg_pictures_path.join("hooya");
-        }
-    }
-
-    let default_db_uri = format!(
-        "sqlite://{}",
-        default_filestore_path
-            .join("hooya.sqlite")
-            .to_str()
-            .unwrap()
-    );
-
     let matches = command!()
         .arg(
             Arg::new("endpoint")
@@ -426,20 +409,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("filestore")
                 .long("filestore")
                 .env("HOOYAD_FILESTORE")
-                .value_parser(value_parser!(PathBuf)),
+                .value_parser(value_parser!(PathBuf))
+                .default_value(".hooya"),
         )
         .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
         .get_matches();
 
-    let filestore_path = matches
-        .get_one::<PathBuf>("filestore")
-        .unwrap_or(&default_filestore_path);
+    // Apply XDG logic if using default path
+    let mut filestore_path = matches.get_one::<PathBuf>("filestore").unwrap().clone();
+    if filestore_path == PathBuf::from(".hooya") && !std::env::var("HOOYAD_FILESTORE").is_ok() {
+        if let Ok(xdg_pictures_dir) = std::env::var("XDG_PICTURES_DIR") {
+            let xdg_pictures_path = std::path::Path::new(&xdg_pictures_dir);
+            if xdg_pictures_path.is_dir() {
+                filestore_path = xdg_pictures_path.join("hooya");
+            }
+        }
+    }
+
+    let config = config::RuntimeConfig::new(filestore_path.clone());
+    let default_db_uri = config.sqlite_uri();
 
     // Create filestore structure
-    create_dir_all(filestore_path.join("store"))?;
-    create_dir_all(filestore_path.join("forgotten"))?;
-    create_dir_all(filestore_path.join("thumbs"))?;
-    create_dir_all(filestore_path.join("tmp"))?;
+    config.ensure_filestore_structure()?;
 
     let db_uri = matches
         .get_one::<String>("db-uri")
@@ -462,7 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
             runtime: Runtime {
-                filestore_path: filestore_path.to_path_buf(),
+                filestore_path,
                 db,
             },
         }))

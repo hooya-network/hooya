@@ -3,7 +3,9 @@ use axum::{
     extract::{Path, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, routing::{get, post}, Form, Router
 };
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
-use clap::{command, Arg};
+use bcrypt::verify;
+use clap::{command, Arg, Command, value_parser};
+use std::path::PathBuf;
 use dotenv::dotenv;
 use futures_util::TryStreamExt;
 use hooya::proto::{
@@ -21,6 +23,7 @@ mod config;
 struct AState {
     client: ControlClient<Channel>,
     jwt_secret: [u8; 32],
+    config: config::RuntimeConfig,
 }
 
 pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
@@ -31,10 +34,20 @@ fn generate_secret_key() -> [u8; 32] {
     key
 }
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let matches = command!()
+        .subcommand_required(false)
+        .arg_required_else_help(false)
+        .subcommand(
+            Command::new("set-password")
+                .about("Set web UI password")
+                .arg(Arg::new("password")
+                    .help("The password to set")
+                    .required(true))
+        )
         .arg(
             Arg::new("hooyad-endpoint")
                 .long("endpoint")
@@ -47,7 +60,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .env("HOOYA_WEB_PROXY_ENDPOINT")
                 .default_value(DEFAULT_HOOYA_WEB_PROXY_ENDPOINT),
         )
+        .arg(
+            Arg::new("data-dir")
+                .long("data-dir")
+                .env("HOOYA_DATADIR")
+                .value_parser(value_parser!(PathBuf))
+                .default_value(".hooya"),
+        )
         .get_matches();
+
+    let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap();
+    let config = config::RuntimeConfig::new(data_dir.clone());
+
+    // Handle subcommands
+    match matches.subcommand() {
+        Some(("set-password", sub_matches)) => {
+            let password = sub_matches.get_one::<String>("password").unwrap();
+            config.store_password_hash(password)?;
+            println!("Password updated successfully");
+            return Ok(());
+        }
+        _ => {} // Continue with normal startup
+    }
+
+    if let Some(new_password) = config.ensure_password_exists()? {
+        println!("Generated new web UI password: {}", new_password);
+        println!("You can change this password using: hooya-web-proxy set-password <new_password>");
+    }
 
     let jwt_secret = generate_secret_key();
     let state = AState {
@@ -57,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?,
         jwt_secret,
+        config,
     };
 
     let app = Router::new()
@@ -106,12 +146,12 @@ async fn login(
     State(state): State<AState>,
     Form(payload): Form<LoginData>,
 ) -> impl IntoResponse {
-    let password = match std::env::var("HOOYA_WEB_PASSWORD") {
-        Ok(value) => value,
-        Err(_) => return (StatusCode::PRECONDITION_FAILED, "").into_response(),
+    let password_hash = match state.config.load_password_hash() {
+        Ok(hash) => hash,
+        Err(_) => return (StatusCode::PRECONDITION_FAILED, "Password not configured").into_response(),
     };
 
-    if payload.password == password { // plaintext cause fuck it
+    if verify(&payload.password, &password_hash).unwrap_or(false) {
         let claims = ClaimData {
             user_id: 1,
             exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
