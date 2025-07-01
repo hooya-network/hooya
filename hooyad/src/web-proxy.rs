@@ -1,11 +1,13 @@
 use anyhow::Result;
 use axum::{
-    extract::{Path, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, routing::{get, post}, Form, Router
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Form, Router,
 };
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
 use bcrypt::verify;
-use clap::{command, Arg, Command, value_parser};
-use std::path::PathBuf;
+use clap::{command, value_parser, Arg, Command};
 use dotenv::dotenv;
 use futures_util::TryStreamExt;
 use hooya::proto::{
@@ -14,9 +16,13 @@ use hooya::proto::{
     LocalFilePageRequest, SearchQuery, SearchRequest, SuggestTagRequest, Tag,
     TagQuery, TagsRequest, Thumbnail,
 };
-use serde::{Deserialize, Serialize};
-use tonic::transport::Channel;
+use jsonwebtoken::{
+    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use tonic::transport::Channel;
 mod config;
 
 #[derive(Clone)]
@@ -28,13 +34,6 @@ struct AState {
 
 pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
 
-fn generate_secret_key() -> [u8; 32] {
-    let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
-    key
-}
-
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -44,9 +43,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .subcommand(
             Command::new("set-password")
                 .about("Set web UI password")
-                .arg(Arg::new("password")
-                    .help("The password to set")
-                    .required(true))
+                .arg(
+                    Arg::new("password")
+                        .help("The password to set")
+                        .required(true),
+                ),
         )
         .arg(
             Arg::new("hooyad-endpoint")
@@ -69,10 +70,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .get_matches();
 
-    let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap();
-    let config = config::RuntimeConfig::new(data_dir.clone());
+    // data dir
+    let mut data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();
+    if data_dir == PathBuf::from(".hooya")
+        && !std::env::var("HOOYA_DATADIR").is_ok()
+    {
+        if let Ok(user_data_dir) = user_dirs::data_dir() {
+            data_dir = user_data_dir.join("hooya");
+        }
+    }
+    let config = config::RuntimeConfig::new(data_dir);
 
-    // Handle subcommands
     match matches.subcommand() {
         Some(("set-password", sub_matches)) => {
             let password = sub_matches.get_one::<String>("password").unwrap();
@@ -83,12 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {} // Continue with normal startup
     }
 
-    if let Some(new_password) = config.ensure_password_exists()? {
-        println!("Generated new web UI password: {}", new_password);
-        println!("You can change this password using: hooya-web-proxy set-password <new_password>");
-    }
-
-    let jwt_secret = generate_secret_key();
+    let mut jwt_secret = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut jwt_secret);
     let state = AState {
         client: ControlClient::connect(format!(
             "http://{}",
@@ -96,8 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?,
         jwt_secret,
-        config,
+        config: config.clone(),
     };
+
+    // for ease of startup
+    if let Some(new_password) = config.ensure_password_exists()? {
+        println!("generated operator password: {}", new_password);
+    }
 
     let app = Router::new()
         .route("/cid-content/:cid", get(cid_content))
@@ -148,7 +157,10 @@ async fn login(
 ) -> impl IntoResponse {
     let password_hash = match state.config.load_password_hash() {
         Ok(hash) => hash,
-        Err(_) => return (StatusCode::PRECONDITION_FAILED, "Password not configured").into_response(),
+        Err(_) => {
+            return (StatusCode::PRECONDITION_FAILED, "Password not configured")
+                .into_response()
+        }
     };
 
     if verify(&payload.password, &password_hash).unwrap_or(false) {
@@ -163,14 +175,21 @@ async fn login(
             &EncodingKey::from_secret(&state.jwt_secret),
         ) {
             Ok(token) => token.into_response(),
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate token").into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate token",
+            )
+                .into_response(),
         }
     } else {
         (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
     }
 }
 
-fn validate_jwt(state: &AState, headers: HeaderMap) -> Result<ClaimData, impl IntoResponse> {
+fn validate_jwt(
+    state: &AState,
+    headers: HeaderMap,
+) -> Result<ClaimData, impl IntoResponse> {
     let auth_header = headers
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
@@ -178,7 +197,13 @@ fn validate_jwt(state: &AState, headers: HeaderMap) -> Result<ClaimData, impl In
 
     let token = match auth_header {
         Some(token) => token,
-        None => return Err((StatusCode::BAD_REQUEST, "Authorization header missing or invalid").into_response()),
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Authorization header missing or invalid",
+            )
+                .into_response())
+        }
     };
 
     let token_data = match decode::<ClaimData>(
@@ -187,11 +212,15 @@ fn validate_jwt(state: &AState, headers: HeaderMap) -> Result<ClaimData, impl In
         &Validation::new(Algorithm::HS256),
     ) {
         Ok(data) => data,
-        Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid token").into_response()),
+        Err(_) => {
+            return Err(
+                (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+            )
+        }
     };
 
     if token_data.claims.exp < chrono::Utc::now().timestamp() as usize {
-        return Err((StatusCode::UNAUTHORIZED, "Expired token").into_response())
+        return Err((StatusCode::UNAUTHORIZED, "Expired token").into_response());
     }
 
     Ok(token_data.claims)
@@ -210,7 +239,7 @@ async fn tag_cid(
 ) -> impl IntoResponse {
     match validate_jwt(&state, headers) {
         Err(e) => return e.into_response(), // unauthorized (generally)
-        _ => { } // valid
+        _ => {}                             // valid
     }
 
     let (_, cid) = match hooya::cid::decode(&encoded_cid) {
@@ -222,7 +251,9 @@ async fn tag_cid(
     };
 
     let tags = payload.tags;
-    state.client.tag_cid(hooya::proto::TagCidRequest { cid, tags, })
+    state
+        .client
+        .tag_cid(hooya::proto::TagCidRequest { cid, tags })
         .await
         .unwrap();
 
@@ -438,20 +469,17 @@ async fn cid_thumbnail_small(
 
     let save_extension = mimetype_extension(&thumbnail.mimetype);
     let filename = match save_extension {
-        Some(save_extension) =>
-            format!("{}_thumb{}.{}", encoded_cid, long_edge, save_extension),
-        None =>
-            format!("{}_thumb{}", encoded_cid, long_edge),
+        Some(save_extension) => {
+            format!("{}_thumb{}.{}", encoded_cid, long_edge, save_extension)
+        }
+        None => format!("{}_thumb{}", encoded_cid, long_edge),
     };
 
     headers.append(
         axum::http::header::CONTENT_DISPOSITION,
-        format!(
-            "inline; filename=\"{}\"",
-            filename,
-        )
-        .parse()
-        .unwrap(),
+        format!("inline; filename=\"{}\"", filename,)
+            .parse()
+            .unwrap(),
     );
 
     (headers, body).into_response()

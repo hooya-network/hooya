@@ -37,4 +37,5 @@ serde_json = "1.0"
 chrono = "0.4"
 jsonwebtoken = "9.0"
 bcrypt = "0.17"
+user_dirs = "0.2"
 
