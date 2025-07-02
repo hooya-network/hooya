@@ -994,12 +994,13 @@ async fn upload_chunk(
     match state.client.upload_chunk(request).await {
         Ok(response) => {
             let reply = response.into_inner();
-            Json(serde_json::json!({
-                "status": reply.status,
-                "bytes_received": reply.bytes_received,
-                "next_chunk_index": reply.next_chunk_index,
-                "error_message": reply.error_message
-            })).into_response()
+            let body = proxy_response::UploadChunkResponse {
+                status: reply.status,
+                bytes_received: reply.bytes_received,
+                next_chunk_index: reply.next_chunk_index,
+                error_message: reply.error_message,
+            };
+            Json(body).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to upload chunk: {}", e)).into_response()
     }
@@ -1020,10 +1021,11 @@ async fn complete_upload(
     match state.client.complete_upload(request).await {
         Ok(response) => {
             let reply = response.into_inner();
-            Json(serde_json::json!({
-                "cid": hooya::cid::encode(reply.cid),
-                "file": reply.file
-            })).into_response()
+            let body = proxy_response::CompleteUploadResponse {
+                cid: hooya::cid::encode(reply.cid),
+                file: reply.file,
+            };
+            Json(body).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to complete upload: {}", e)).into_response()
     }
@@ -1044,13 +1046,14 @@ async fn upload_status(
     match state.client.get_upload_status(request).await {
         Ok(response) => {
             let reply = response.into_inner();
-            Json(serde_json::json!({
-                "status": reply.status,
-                "bytes_received": reply.bytes_received,
-                "expected_size": reply.expected_size,
-                "next_chunk_index": reply.next_chunk_index,
-                "error_message": reply.error_message
-            })).into_response()
+            let body = proxy_response::UploadStatusResponse {
+                status: reply.status,
+                bytes_received: reply.bytes_received,
+                expected_size: reply.expected_size,
+                next_chunk_index: reply.next_chunk_index,
+                error_message: reply.error_message,
+            };
+            Json(body).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get upload status: {}", e)).into_response()
     }
@@ -1177,6 +1180,29 @@ mod proxy_response {
                 is_animated: t.is_animated,
             }
         }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct UploadChunkResponse {
+        pub status: i32,
+        pub bytes_received: i64,
+        pub next_chunk_index: i64,
+        pub error_message: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct CompleteUploadResponse {
+        pub cid: String,
+        pub file: Option<hooya::proto::File>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct UploadStatusResponse {
+        pub status: i32,
+        pub bytes_received: i64,
+        pub expected_size: i64,
+        pub next_chunk_index: i64,
+        pub error_message: Option<String>,
     }
 }
 
