@@ -24,8 +24,8 @@ impl From<&str> for proto::Tag {
     }
 }
 
-impl ToString for proto::Tag {
-    fn to_string(&self) -> String {
-        [self.namespace.clone(), self.descriptor.clone()].join(":")
+impl std::fmt::Display for proto::Tag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.namespace, self.descriptor)
     }
 }

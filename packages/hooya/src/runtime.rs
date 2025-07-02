@@ -13,11 +13,14 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub async fn import_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
+    pub async fn import_basic_file_record(
+        &self,
+        cid: Vec<u8>,
+    ) -> Result<crate::proto::File> {
         let cid_store_path = self.derive_store_path(&cid)?;
 
         let size: i64 =
-            fs::metadata(cid_store_path.clone())?.len().try_into()?; // TODO
+            fs::metadata(cid_store_path.clone())?.len().try_into()?;
 
         let inferred = infer::get_from_path(&cid_store_path)?;
         let mimetype = inferred.map(|i| i.to_string());
@@ -30,19 +33,38 @@ impl Runtime {
 
         self.db.new_file(f).await?;
 
+        Ok(crate::proto::File {
+            cid: cid.clone(),
+            size,
+            mimetype,
+            ext_file: None, // not processed yet sooo
+        })
+    }
+
+    pub async fn process_file_background(&self, cid: Vec<u8>) -> Result<()> {
+        let cid_store_path = self.derive_store_path(&cid)?;
+        let inferred = infer::get_from_path(&cid_store_path)?;
+
         // Extract additional detail about the file given its type
         if let Some(inferred_mimetype) = inferred {
+            let mimetype = inferred_mimetype.to_string();
             match inferred_mimetype.matcher_type() {
                 infer::MatcherType::Image => {
-                    self.import_image(cid, &mimetype.unwrap()).await?
+                    self.import_image(cid, &mimetype).await?
                 }
                 infer::MatcherType::Video => {
-                    self.import_video(cid, &mimetype.unwrap()).await?
+                    self.import_video(cid, &mimetype).await?
                 }
                 _ => {}
             }
         }
 
+        Ok(())
+    }
+
+    pub async fn import_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
+        self.import_basic_file_record(cid.clone()).await?;
+        self.process_file_background(cid).await?;
         Ok(())
     }
 

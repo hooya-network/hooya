@@ -4,21 +4,24 @@ use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, CidInfoReply,
-    CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest, FileChunk,
-    ForgetFileReply, ForgetFileRequest, LocalFilePageReply,
-    LocalFilePageRequest, RandomLocalFileReply, RandomLocalFileRequest,
-    ReimportReply, ReimportRequest, SearchReply, SearchRequest,
+    CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
+    CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
+    ForgetFileRequest, GetUploadStatusReply, GetUploadStatusRequest,
+    LocalFilePageReply, LocalFilePageRequest, RandomLocalFileReply,
+    RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
+    SearchRequest, StartUploadSessionReply, StartUploadSessionRequest,
     StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, VersionReply, VersionRequest,
-    StartUploadSessionRequest, StartUploadSessionReply, UploadChunkRequest,
-    UploadChunkReply, CompleteUploadRequest, CompleteUploadReply,
-    GetUploadStatusRequest, GetUploadStatusReply, UploadStatus,
+    TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
+    UploadChunkRequest, UploadStatus, VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Sqlite, SqlitePool};
-use std::{collections::HashMap, fs::File, io::Write, path::PathBuf, pin::Pin, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap, fs::File, io::Write, path::PathBuf, pin::Pin,
+    sync::Arc, time::Instant,
+};
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
@@ -30,16 +33,16 @@ const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024; // 10MB max chunk size
 struct UploadSession {
     id: String,
     temp_file: File,
-    expected_size: Option<i64>,
+    expected_size: Option<u64>,
     mimetype: Option<String>,
-    bytes_received: i64,
-    next_expected_chunk: i64,
+    bytes_received: u64,
+    next_expected_chunk: String,
     chunk_size: u32,
     started_at: Instant,
 }
 
 struct IControl {
-    pub runtime: Runtime,
+    pub runtime: Arc<Runtime>,
     pub upload_sessions: Arc<Mutex<HashMap<String, UploadSession>>>,
 }
 
@@ -411,39 +414,43 @@ impl Control for IControl {
         r: Request<StartUploadSessionRequest>,
     ) -> Result<Response<StartUploadSessionReply>, Status> {
         let req = r.into_inner();
-        
-        // Generate unique upload ID
+
+        // random id
         let upload_id = rand::distributions::Alphanumeric
             .sample_string(&mut rand::thread_rng(), 16);
-        
-        // Cap chunk size if over maximum
+
+        // put a ceiling on chunk size
         let chunk_size = std::cmp::min(req.chunk_size, MAX_CHUNK_SIZE);
-        
-        // Create temp file
+
+        // temp file for upload sessions
         let tmp_name = format!("{}_session", upload_id);
         let tmp_path = self.runtime.filestore_path.join("tmp").join(&tmp_name);
-        let temp_file = File::create(&tmp_path)
-            .map_err(|e| Status::internal(format!("Failed to create temp file: {}", e)))?;
-        
+        let temp_file = File::create(&tmp_path).map_err(|e| {
+            Status::internal(format!("Failed to create temp file: {}", e))
+        })?;
+
         let session = UploadSession {
             id: upload_id.clone(),
             temp_file,
             expected_size: req.size,
             mimetype: req.mimetype,
             bytes_received: 0,
-            next_expected_chunk: 0,
+            next_expected_chunk: 0.to_string(),
             chunk_size,
             started_at: Instant::now(),
         };
-        
+
         // Store session
-        self.upload_sessions.lock().await.insert(upload_id.clone(), session);
-        
+        self.upload_sessions
+            .lock()
+            .await
+            .insert(upload_id.clone(), session);
+
         let reply = StartUploadSessionReply {
             upload_id,
             chunk_size,
         };
-        
+
         Ok(Response::new(reply))
     }
 
@@ -453,31 +460,54 @@ impl Control for IControl {
     ) -> Result<Response<UploadChunkReply>, Status> {
         let req = r.into_inner();
         let mut sessions = self.upload_sessions.lock().await;
-        
-        let session = sessions.get_mut(&req.upload_id)
-            .ok_or_else(|| Status::not_found("Upload session not found"))?;
-        
-        // Validate chunk is the expected next one
+
+        let session = sessions
+            .get_mut(&req.upload_id)
+            .ok_or_else(|| Status::not_found("upload session not found"))?;
+
+        // this ensures we don't append out of order if one was dropped
         if req.chunk_index != session.next_expected_chunk {
             return Ok(Response::new(UploadChunkReply {
-                status: UploadStatus::UploadError as i32,
+                status: UploadStatus::UploadError.into(),
                 error_message: Some(format!(
-                    "Expected chunk {}, got chunk {}",
+                    "expected chunk {}, got chunk {}",
                     session.next_expected_chunk, req.chunk_index
                 )),
                 bytes_received: session.bytes_received,
-                next_chunk_index: session.next_expected_chunk,
+                next_chunk_index: session.next_expected_chunk.clone(),
             }));
         }
-        
-        // Write chunk data
-        session.temp_file.write_all(&req.data)
-            .map_err(|e| Status::internal(format!("Failed to write chunk: {}", e)))?;
-        
-        session.bytes_received += req.data.len() as i64;
-        session.next_expected_chunk += 1;
-        
-        // Check if upload is complete
+
+        // enforce that len is respected unless this is chunk would be the final one
+        let this_data_len = req.data.len().try_into().unwrap_or(u64::MAX);
+        if this_data_len != session.chunk_size as u64
+            && session.bytes_received + this_data_len
+                != session.expected_size.unwrap_or(u64::MAX)
+        {
+            return Ok(Response::new(UploadChunkReply {
+                status: UploadStatus::UploadError.into(),
+                error_message: Some(format!(
+                    "chunk is not correct size: expected {} got {}",
+                    session.chunk_size, this_data_len
+                )),
+                bytes_received: session.bytes_received,
+                next_chunk_index: session.next_expected_chunk.clone(),
+            }));
+        }
+
+        // write chunk data
+        session.temp_file.write_all(&req.data).map_err(|e| {
+            Status::internal(format!("failed to write chunk: {}", e))
+        })?;
+
+        session.bytes_received += this_data_len;
+        let this_chunk_number = session
+            .next_expected_chunk
+            .parse::<u64>()
+            .expect("could not parse chunk id as number");
+        session.next_expected_chunk = (this_chunk_number + 1).to_string();
+
+        // check if upload is complete
         let status = if let Some(expected_size) = session.expected_size {
             if session.bytes_received >= expected_size {
                 UploadStatus::UploadComplete as i32
@@ -487,14 +517,14 @@ impl Control for IControl {
         } else {
             UploadStatus::UploadInProgress as i32
         };
-        
+
         let reply = UploadChunkReply {
             status,
             error_message: None,
             bytes_received: session.bytes_received,
-            next_chunk_index: session.next_expected_chunk,
+            next_chunk_index: session.next_expected_chunk.clone(),
         };
-        
+
         Ok(Response::new(reply))
     }
 
@@ -504,57 +534,70 @@ impl Control for IControl {
     ) -> Result<Response<CompleteUploadReply>, Status> {
         let req = r.into_inner();
         let mut sessions = self.upload_sessions.lock().await;
-        
-        let session = sessions.remove(&req.upload_id)
-            .ok_or_else(|| Status::not_found("Upload session not found"))?;
-        
+
+        let session = sessions
+            .remove(&req.upload_id)
+            .ok_or_else(|| Status::not_found("upload session not found"))?;
+
         // Close temp file and reconstruct its path
         drop(session.temp_file);
         let tmp_name = format!("{}_session", session.id);
         let tmp_path = self.runtime.filestore_path.join("tmp").join(&tmp_name);
-        
-        // Calculate CID by reading the file
-        let file_data = std::fs::read(&tmp_path)
-            .map_err(|e| Status::internal(format!("Failed to read temp file: {}", e)))?;
-        
+
+        let file_data = std::fs::read(&tmp_path).map_err(|e| {
+            Status::internal(format!("failed to read tmp file: {}", e))
+        })?;
+
         if file_data.is_empty() {
-            return Err(Status::invalid_argument("Empty file"));
+            return Err(Status::invalid_argument("empty file"));
         }
-        
-        // Calculate CID
+
+        // compute cid
         let mut sha_context = hooya::cid::new_digest_context();
         sha_context.update(&file_data);
         let cid = hooya::cid::wrap_digest(sha_context.finish())
             .map_err(|e| Status::internal(e.to_string()))?;
-        
-        // Move to final location
-        let cid_store_path = self.runtime.derive_store_path(&cid)
+
+        // move to final location
+        let cid_store_path = self
+            .runtime
+            .derive_store_path(&cid)
             .map_err(|e| Status::internal(e.to_string()))?;
-        
+
         let parent = cid_store_path.parent().unwrap();
         if !parent.is_dir() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Status::internal(format!("Failed to create directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Status::internal(format!("failed to create directory: {}", e))
+            })?;
         }
-        
-        std::fs::rename(&tmp_path, &cid_store_path)
-            .map_err(|e| Status::internal(format!("Failed to move file: {}", e)))?;
-        
-        // Import into runtime
-        self.runtime
-            .import_from_filestore(cid.clone())
+
+        std::fs::rename(&tmp_path, &cid_store_path).map_err(|e| {
+            Status::internal(format!("failed to move file: {}", e))
+        })?;
+
+        // import once uploaded
+        let file = self
+            .runtime
+            .import_basic_file_record(cid.clone())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        
-        // Get file info
-        let file = self.runtime.indexed_file(cid.clone()).await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        
+
+        // Spawn background processing for thumbnails
+        let runtime_clone = Arc::clone(&self.runtime);
+        let cid_clone = cid.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                runtime_clone.process_file_background(cid_clone).await
+            {
+                eprintln!("background file processing failed: {}", e);
+            }
+        });
+
         let reply = CompleteUploadReply {
             cid,
             file: Some(file),
         };
-        
+
         Ok(Response::new(reply))
     }
 
@@ -564,28 +607,29 @@ impl Control for IControl {
     ) -> Result<Response<GetUploadStatusReply>, Status> {
         let req = r.into_inner();
         let sessions = self.upload_sessions.lock().await;
-        
-        let session = sessions.get(&req.upload_id)
-            .ok_or_else(|| Status::not_found("Upload session not found"))?;
-        
+
+        let session = sessions
+            .get(&req.upload_id)
+            .ok_or_else(|| Status::not_found("upload session not found"))?;
+
         let status = if let Some(expected_size) = session.expected_size {
             if session.bytes_received >= expected_size {
-                UploadStatus::UploadComplete as i32
+                UploadStatus::UploadComplete
             } else {
-                UploadStatus::UploadInProgress as i32
+                UploadStatus::UploadInProgress
             }
         } else {
-            UploadStatus::UploadInProgress as i32
-        };
-        
+            UploadStatus::UploadInProgress
+        } as i32;
+
         let reply = GetUploadStatusReply {
             status,
             bytes_received: session.bytes_received,
             expected_size: session.expected_size.unwrap_or(0),
-            next_chunk_index: session.next_expected_chunk,
+            next_chunk_index: session.next_expected_chunk.clone(),
             error_message: None,
         };
-        
+
         Ok(Response::new(reply))
     }
 }
@@ -612,7 +656,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_matches();
 
     // filestore path
-    let filestore_path = matches.get_one::<PathBuf>("filestore").unwrap().clone();
+    let filestore_path =
+        matches.get_one::<PathBuf>("filestore").unwrap().clone();
 
     let config = config::RuntimeConfig::new(filestore_path.clone());
     let default_db_uri = config.sqlite_uri();
@@ -640,7 +685,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
-            runtime: Runtime { filestore_path, db },
+            runtime: Arc::new(Runtime { filestore_path, db }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)

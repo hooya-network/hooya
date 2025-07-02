@@ -1,7 +1,6 @@
+use once_cell::sync::Lazy;
 use std::fs;
 use std::path::PathBuf;
-use user_dirs;
-use once_cell::sync::Lazy;
 
 pub const DEFAULT_HOOYAD_ENDPOINT: &str = "127.0.0.1:8531";
 

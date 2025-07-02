@@ -12,10 +12,10 @@ use dotenv::dotenv;
 use futures_util::TryStreamExt;
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
-    CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
-    LocalFilePageRequest, SearchQuery, SearchRequest, SuggestTagRequest, Tag,
-    TagQuery, TagsRequest, Thumbnail, StartUploadSessionRequest,
-    UploadChunkRequest, CompleteUploadRequest, GetUploadStatusRequest,
+    CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
+    ContentAtCidRequest, GetUploadStatusRequest, LocalFilePageRequest,
+    SearchQuery, SearchRequest, StartUploadSessionRequest, SuggestTagRequest,
+    Tag, TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -75,14 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();
     let config = config::RuntimeConfig::new(data_dir);
 
-    match matches.subcommand() {
-        Some(("set-password", sub_matches)) => {
-            let password = sub_matches.get_one::<String>("password").unwrap();
-            config.store_password_hash(password)?;
-            println!("Password updated successfully");
-            return Ok(());
-        }
-        _ => {} // Continue with normal startup
+    if let Some(("set-password", sub_matches)) = matches.subcommand() {
+        let password = sub_matches.get_one::<String>("password").unwrap();
+        config.store_password_hash(password)?;
+        println!("Password updated successfully");
+        return Ok(());
     }
 
     let mut jwt_secret = [0u8; 32];
@@ -121,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB limit
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
@@ -236,9 +233,8 @@ async fn tag_cid(
     Path(encoded_cid): Path<String>,
     Form(payload): Form<TagCidData>,
 ) -> impl IntoResponse {
-    match validate_jwt(&state, headers) {
-        Err(e) => return e.into_response(), // unauthorized (generally)
-        _ => {}                             // valid
+    if let Err(e) = validate_jwt(&state, headers) {
+        return e.into_response();
     }
 
     let (_, cid) = match hooya::cid::decode(&encoded_cid) {
@@ -936,7 +932,7 @@ async fn search_files(
 
 #[derive(Deserialize)]
 struct StartUploadRequest {
-    size: Option<i64>,
+    size: Option<u64>,
     mimetype: Option<String>,
     chunk_size: u32,
 }
@@ -952,9 +948,8 @@ async fn start_upload(
     headers: HeaderMap,
     Json(payload): Json<StartUploadRequest>,
 ) -> impl IntoResponse {
-    match validate_jwt(&state, headers) {
-        Err(e) => return e.into_response(),
-        _ => {}
+    if let Err(e) = validate_jwt(&state, headers) {
+        return e.into_response();
     }
 
     let request = StartUploadSessionRequest {
@@ -969,21 +964,25 @@ async fn start_upload(
             Json(StartUploadResponse {
                 upload_id: reply.upload_id,
                 chunk_size: reply.chunk_size,
-            }).into_response()
+            })
+            .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start upload: {}", e)).into_response()
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to start upload: {}", e),
+        )
+            .into_response(),
     }
 }
 
 async fn upload_chunk(
     State(mut state): State<AState>,
     headers: HeaderMap,
-    Path((upload_id, chunk_index)): Path<(String, i64)>,
+    Path((upload_id, chunk_index)): Path<(String, String)>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    match validate_jwt(&state, headers) {
-        Err(e) => return e.into_response(),
-        _ => {}
+    if let Err(e) = validate_jwt(&state, headers) {
+        return e.into_response();
     }
 
     let request = UploadChunkRequest {
@@ -1003,7 +1002,11 @@ async fn upload_chunk(
             };
             Json(body).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to upload chunk: {}", e)).into_response()
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to upload chunk: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -1012,9 +1015,8 @@ async fn complete_upload(
     headers: HeaderMap,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    match validate_jwt(&state, headers) {
-        Err(e) => return e.into_response(),
-        _ => {}
+    if let Err(e) = validate_jwt(&state, headers) {
+        return e.into_response();
     }
 
     let request = CompleteUploadRequest { upload_id };
@@ -1022,13 +1024,20 @@ async fn complete_upload(
     match state.client.complete_upload(request).await {
         Ok(response) => {
             let reply = response.into_inner();
+            let cid_bytes = reply.cid.clone();
+            let file_info = reply.file.clone();
+
             let body = proxy_response::CompleteUploadResponse {
-                cid: hooya::cid::encode(reply.cid),
-                file: reply.file,
+                cid: hooya::cid::encode(cid_bytes),
+                file: file_info,
             };
             Json(body).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to complete upload: {}", e)).into_response()
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to complete upload: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -1037,9 +1046,8 @@ async fn upload_status(
     headers: HeaderMap,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    match validate_jwt(&state, headers) {
-        Err(e) => return e.into_response(),
-        _ => {}
+    if let Err(e) = validate_jwt(&state, headers) {
+        return e.into_response();
     }
 
     let request = GetUploadStatusRequest { upload_id };
@@ -1056,7 +1064,11 @@ async fn upload_status(
             };
             Json(body).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get upload status: {}", e)).into_response()
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get upload status: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -1186,8 +1198,8 @@ mod proxy_response {
     #[derive(Serialize, Deserialize)]
     pub struct UploadChunkResponse {
         pub status: i32,
-        pub bytes_received: i64,
-        pub next_chunk_index: i64,
+        pub bytes_received: u64,
+        pub next_chunk_index: String,
         pub error_message: Option<String>,
     }
 
@@ -1200,9 +1212,9 @@ mod proxy_response {
     #[derive(Serialize, Deserialize)]
     pub struct UploadStatusResponse {
         pub status: i32,
-        pub bytes_received: i64,
-        pub expected_size: i64,
-        pub next_chunk_index: i64,
+        pub bytes_received: u64,
+        pub expected_size: u64,
+        pub next_chunk_index: String,
         pub error_message: Option<String>,
     }
 }
