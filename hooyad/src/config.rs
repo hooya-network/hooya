@@ -1,7 +1,17 @@
 use std::fs;
 use std::path::PathBuf;
+use user_dirs;
+use once_cell::sync::Lazy;
 
 pub const DEFAULT_HOOYAD_ENDPOINT: &str = "127.0.0.1:8531";
+
+pub static DEFAULT_DATA_DIR: Lazy<String> = Lazy::new(|| {
+    user_dirs::data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("hooya")
+        .to_string_lossy()
+        .to_string()
+});
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {

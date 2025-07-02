@@ -3,8 +3,8 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
-    Form, Router,
+    routing::{get, post, put},
+    Form, Json, Router,
 };
 use bcrypt::verify;
 use clap::{command, value_parser, Arg, Command};
@@ -14,7 +14,8 @@ use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
     CidInfoRequest, CidThumbnailRequest, ContentAtCidRequest,
     LocalFilePageRequest, SearchQuery, SearchRequest, SuggestTagRequest, Tag,
-    TagQuery, TagsRequest, Thumbnail,
+    TagQuery, TagsRequest, Thumbnail, StartUploadSessionRequest,
+    UploadChunkRequest, CompleteUploadRequest, GetUploadStatusRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -66,19 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("data-dir")
                 .env("HOOYA_DATADIR")
                 .value_parser(value_parser!(PathBuf))
-                .default_value(".hooya"),
+                .default_value(&**config::DEFAULT_DATA_DIR),
         )
         .get_matches();
 
     // data dir
-    let mut data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();
-    if data_dir == PathBuf::from(".hooya")
-        && !std::env::var("HOOYA_DATADIR").is_ok()
-    {
-        if let Ok(user_data_dir) = user_dirs::data_dir() {
-            data_dir = user_data_dir.join("hooya");
-        }
-    }
+    let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();
     let config = config::RuntimeConfig::new(data_dir);
 
     match matches.subcommand() {
@@ -123,6 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/suggest-tag", get(suggest_tag))
         .route("/login", post(login))
         .route("/tag-cid/:cid", post(tag_cid))
+        .route("/start-upload", post(start_upload))
+        .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
+        .route("/complete-upload/:upload_id", post(complete_upload))
+        .route("/upload-status/:upload_id", get(upload_status))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
@@ -933,6 +931,129 @@ async fn search_files(
     };
 
     axum::Json(body).into_response()
+}
+
+#[derive(Deserialize)]
+struct StartUploadRequest {
+    size: Option<i64>,
+    mimetype: Option<String>,
+    chunk_size: u32,
+}
+
+#[derive(Serialize)]
+struct StartUploadResponse {
+    upload_id: String,
+    chunk_size: u32,
+}
+
+async fn start_upload(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Json(payload): Json<StartUploadRequest>,
+) -> impl IntoResponse {
+    match validate_jwt(&state, headers) {
+        Err(e) => return e.into_response(),
+        _ => {}
+    }
+
+    let request = StartUploadSessionRequest {
+        size: payload.size,
+        mimetype: payload.mimetype,
+        chunk_size: payload.chunk_size,
+    };
+
+    match state.client.start_upload_session(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(StartUploadResponse {
+                upload_id: reply.upload_id,
+                chunk_size: reply.chunk_size,
+            }).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start upload: {}", e)).into_response()
+    }
+}
+
+async fn upload_chunk(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Path((upload_id, chunk_index)): Path<(String, i64)>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    match validate_jwt(&state, headers) {
+        Err(e) => return e.into_response(),
+        _ => {}
+    }
+
+    let request = UploadChunkRequest {
+        upload_id,
+        chunk_index,
+        data: body.to_vec(),
+    };
+
+    match state.client.upload_chunk(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "status": reply.status,
+                "bytes_received": reply.bytes_received,
+                "next_chunk_index": reply.next_chunk_index,
+                "error_message": reply.error_message
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to upload chunk: {}", e)).into_response()
+    }
+}
+
+async fn complete_upload(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Path(upload_id): Path<String>,
+) -> impl IntoResponse {
+    match validate_jwt(&state, headers) {
+        Err(e) => return e.into_response(),
+        _ => {}
+    }
+
+    let request = CompleteUploadRequest { upload_id };
+
+    match state.client.complete_upload(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "cid": hooya::cid::encode(reply.cid),
+                "file": reply.file
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to complete upload: {}", e)).into_response()
+    }
+}
+
+async fn upload_status(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Path(upload_id): Path<String>,
+) -> impl IntoResponse {
+    match validate_jwt(&state, headers) {
+        Err(e) => return e.into_response(),
+        _ => {}
+    }
+
+    let request = GetUploadStatusRequest { upload_id };
+
+    match state.client.get_upload_status(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "status": reply.status,
+                "bytes_received": reply.bytes_received,
+                "expected_size": reply.expected_size,
+                "next_chunk_index": reply.next_chunk_index,
+                "error_message": reply.error_message
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get upload status: {}", e)).into_response()
+    }
 }
 
 mod proxy_response {
