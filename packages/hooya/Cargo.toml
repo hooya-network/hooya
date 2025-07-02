@@ -10,11 +10,11 @@ prost = { version = "0.12" }
 cid = "0.10"
 ring = "0.16"
 tokio = { version = "1.0", features = [ "macros", "rt-multi-thread"] }
-sqlx = { version = "0.6", features = [ "runtime-tokio-native-tls" ] }
+sqlx = { version = "0.6", features = [ "runtime-tokio-native-tls", "sqlite" ] }
 anyhow = "1.0"
 infer = "0.14"
 futures-util = "0.3"
-image = "0.24"
+image = "0.25"
 kamadak-exif = "0.5"
 serde = { version = "1.0", features = [ "derive" ] }
 

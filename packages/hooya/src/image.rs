@@ -31,7 +31,7 @@ pub fn thumbnail(
     }
     .into_rgba8();
 
-    transformed.save_with_format(out_file, ImageFormat::Jpeg)?;
+    transformed.save_with_format(out_file, ImageFormat::Avif)?;
 
     Ok((transformed.height(), transformed.width()))
 }

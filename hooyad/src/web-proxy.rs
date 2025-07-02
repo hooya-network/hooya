@@ -1,6 +1,6 @@
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post, put},
@@ -121,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB limit
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
