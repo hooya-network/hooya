@@ -237,7 +237,7 @@ async fn login(
     }
 }
 
-fn validate_jwt(
+fn require_auth(
     state: &AState,
     headers: HeaderMap,
 ) -> Result<ClaimData, impl IntoResponse> {
@@ -288,16 +288,13 @@ async fn tag_cid(
     Path(encoded_cid): Path<String>,
     Form(payload): Form<TagCidData>,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_jwt(&state, headers) {
+    if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
     }
 
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let tags = payload.tags;
@@ -314,12 +311,9 @@ async fn cid_content(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -373,13 +367,9 @@ async fn cid_thumbnail_medium(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let mut headers = HeaderMap::new();
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -392,17 +382,9 @@ async fn cid_thumbnail_medium(
         .file
         .unwrap();
 
-    let ext_file = match file_info.ext_file {
-        Some(ext_file) => ext_file,
-        None => {
-            return (axum::http::StatusCode::NOT_FOUND, "No such CID indexed")
-                .into_response()
-        }
-    };
-
-    let thumbs = match ext_file {
-        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
-        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
+    let thumbs = match extract_thumbnails(&file_info) {
+        Ok(thumbs) => thumbs,
+        Err(e) => return e.into_response(),
     };
 
     let thumbnail = closest_thumbnail(&thumbs, 1280);
@@ -414,38 +396,11 @@ async fn cid_thumbnail_medium(
     .try_into()
     .unwrap();
 
-    let chunk_stream = client
-        .cid_thumbnail(CidThumbnailRequest {
-            source_cid: cid,
-            long_edge,
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let chunk_stream =
+        create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
-
-    headers.append(
-        axum::http::header::CACHE_CONTROL,
-        "max-age=31536000, immutable".parse().unwrap(),
-    );
-    headers.append(axum::http::header::CONTENT_LENGTH, thumbnail.size.into());
-
-    headers.append(
-        axum::http::header::CONTENT_TYPE,
-        thumbnail.mimetype.parse().unwrap(),
-    );
-
-    let save_extension = mimetype_extension(&thumbnail.mimetype).unwrap();
-    headers.append(
-        axum::http::header::CONTENT_DISPOSITION,
-        format!(
-            "inline; filename=\"{}_thumb{}.{}\"",
-            encoded_cid, long_edge, save_extension
-        )
-        .parse()
-        .unwrap(),
-    );
+    let headers =
+        create_thumbnail_headers(&thumbnail, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -454,13 +409,9 @@ async fn cid_thumbnail_small(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let mut headers = HeaderMap::new();
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -473,17 +424,9 @@ async fn cid_thumbnail_small(
         .file
         .unwrap();
 
-    let ext_file = match file_info.ext_file {
-        Some(ext_file) => ext_file,
-        None => {
-            return (axum::http::StatusCode::NOT_FOUND, "No such CID indexed")
-                .into_response()
-        }
-    };
-
-    let thumbs = match ext_file {
-        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
-        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
+    let thumbs = match extract_thumbnails(&file_info) {
+        Ok(thumbs) => thumbs,
+        Err(e) => return e.into_response(),
     };
 
     let thumbnail = closest_thumbnail(&thumbs, 640);
@@ -495,42 +438,11 @@ async fn cid_thumbnail_small(
     .try_into()
     .unwrap();
 
-    let chunk_stream = client
-        .cid_thumbnail(CidThumbnailRequest {
-            source_cid: cid,
-            long_edge,
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let chunk_stream =
+        create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
-
-    headers.append(
-        axum::http::header::CACHE_CONTROL,
-        "max-age=31536000, immutable".parse().unwrap(),
-    );
-    headers.append(axum::http::header::CONTENT_LENGTH, thumbnail.size.into());
-
-    headers.append(
-        axum::http::header::CONTENT_TYPE,
-        thumbnail.mimetype.parse().unwrap(),
-    );
-
-    let save_extension = mimetype_extension(&thumbnail.mimetype);
-    let filename = match save_extension {
-        Some(save_extension) => {
-            format!("{}_thumb{}.{}", encoded_cid, long_edge, save_extension)
-        }
-        None => format!("{}_thumb{}", encoded_cid, long_edge),
-    };
-
-    headers.append(
-        axum::http::header::CONTENT_DISPOSITION,
-        format!("inline; filename=\"{}\"", filename,)
-            .parse()
-            .unwrap(),
-    );
+    let headers =
+        create_thumbnail_headers(&thumbnail, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -539,13 +451,9 @@ async fn cid_thumbnail(
     State(state): State<AState>,
     Path((encoded_cid, long_edge)): Path<(String, u32)>,
 ) -> impl IntoResponse {
-    let mut headers = HeaderMap::new();
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -558,17 +466,9 @@ async fn cid_thumbnail(
         .file
         .unwrap();
 
-    let ext_file = match file_info.ext_file {
-        Some(ext_file) => ext_file,
-        None => {
-            return (axum::http::StatusCode::NOT_FOUND, "No such CID indexed")
-                .into_response()
-        }
-    };
-
-    let thumbs = match ext_file {
-        hooya::proto::file::ExtFile::Image(i) => i.thumbnails,
-        hooya::proto::file::ExtFile::Video(v) => v.thumbnails,
+    let thumbs = match extract_thumbnails(&file_info) {
+        Ok(thumbs) => thumbs,
+        Err(e) => return e.into_response(),
     };
 
     let thumb_match = thumbs.iter().find(|t| {
@@ -587,38 +487,11 @@ async fn cid_thumbnail(
         }
     };
 
-    let chunk_stream = client
-        .cid_thumbnail(CidThumbnailRequest {
-            source_cid: cid,
-            long_edge,
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .and_then(|f| futures::future::ok(FileChunk(f)));
+    let chunk_stream =
+        create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
-
-    headers.append(
-        axum::http::header::CACHE_CONTROL,
-        "max-age=31536000, immutable".parse().unwrap(),
-    );
-    headers.append(axum::http::header::CONTENT_LENGTH, thumb.size.into());
-
-    headers.append(
-        axum::http::header::CONTENT_TYPE,
-        thumb.mimetype.parse().unwrap(),
-    );
-
-    let save_extension = mimetype_extension(&thumb.mimetype).unwrap();
-    headers.append(
-        axum::http::header::CONTENT_DISPOSITION,
-        format!(
-            "inline; filename=\"{}_thumb{}.{}\"",
-            encoded_cid, long_edge, save_extension
-        )
-        .parse()
-        .unwrap(),
-    );
+    let headers =
+        create_thumbnail_headers(&thumb, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -647,16 +520,113 @@ fn mimetype_extension(mimetype: &str) -> Option<String> {
     }
 }
 
+// helper functions for common api patterns
+
+fn decode_cid_param(encoded_cid: &str) -> Result<Vec<u8>, impl IntoResponse> {
+    match hooya::cid::decode(encoded_cid) {
+        Ok((_, cid)) => Ok(cid),
+        Err(_) => Err((StatusCode::BAD_REQUEST, "Invalid CID").into_response()),
+    }
+}
+
+fn file_info_to_response(
+    info: hooya::proto::File,
+) -> proxy_response::CidInfoResponse {
+    let cid = hooya::cid::encode(info.cid);
+    let size = info.size;
+    let mimetype = info.mimetype;
+    let ext_file = info.ext_file.map(|f| f.into());
+    let processing_status = info.processing_status;
+
+    proxy_response::CidInfoResponse {
+        cid,
+        size,
+        mimetype,
+        ext_file,
+        processing_status,
+    }
+}
+
+fn extract_thumbnails(
+    file_info: &hooya::proto::File,
+) -> Result<Vec<hooya::proto::Thumbnail>, impl IntoResponse> {
+    let ext_file = match &file_info.ext_file {
+        Some(ext_file) => ext_file,
+        None => {
+            return Err(
+                (StatusCode::NOT_FOUND, "No such CID indexed").into_response()
+            )
+        }
+    };
+
+    let thumbs = match ext_file {
+        hooya::proto::file::ExtFile::Image(i) => &i.thumbnails,
+        hooya::proto::file::ExtFile::Video(v) => &v.thumbnails,
+    };
+
+    Ok(thumbs.clone())
+}
+
+fn create_thumbnail_headers(
+    thumbnail: &hooya::proto::Thumbnail,
+    encoded_cid: &str,
+    long_edge: Option<u32>,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+
+    headers.append(
+        axum::http::header::CACHE_CONTROL,
+        "max-age=31536000, immutable".parse().unwrap(),
+    );
+    headers.append(axum::http::header::CONTENT_LENGTH, thumbnail.size.into());
+    headers.append(
+        axum::http::header::CONTENT_TYPE,
+        thumbnail.mimetype.parse().unwrap(),
+    );
+
+    let save_extension = mimetype_extension(&thumbnail.mimetype);
+    let filename = match (save_extension, long_edge) {
+        (Some(ext), Some(edge)) => {
+            format!("{}_thumb{}.{}", encoded_cid, edge, ext)
+        }
+        (Some(ext), None) => format!("{}_thumb.{}", encoded_cid, ext),
+        (None, Some(edge)) => format!("{}_thumb{}", encoded_cid, edge),
+        (None, None) => format!("{}_thumb", encoded_cid),
+    };
+
+    headers.append(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("inline; filename=\"{}\"", filename)
+            .parse()
+            .unwrap(),
+    );
+
+    headers
+}
+
+async fn create_thumbnail_stream(
+    client: &mut ControlClient<Channel>,
+    cid: Vec<u8>,
+    long_edge: u32,
+) -> impl futures_util::Stream<Item = Result<FileChunk, tonic::Status>> {
+    client
+        .cid_thumbnail(CidThumbnailRequest {
+            source_cid: cid,
+            long_edge,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .and_then(|f| futures::future::ok(FileChunk(f)))
+}
+
 async fn cid_tags(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -675,12 +645,9 @@ async fn cid_info(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     let mut client = state.client;
@@ -700,19 +667,7 @@ async fn cid_info(
         }
     };
 
-    let cid = hooya::cid::encode(info.cid);
-    let size = info.size;
-    let mimetype = info.mimetype;
-    let ext_file = info.ext_file.map(|f| f.into());
-    let processing_status = info.processing_status;
-
-    let body = proxy_response::CidInfoResponse {
-        cid,
-        size,
-        mimetype,
-        ext_file,
-        processing_status,
-    };
+    let body = file_info_to_response(info);
 
     axum::Json(body).into_response()
 }
@@ -770,21 +725,7 @@ async fn all_files(
     let files = all_files_resp
         .files
         .into_iter()
-        .map(|info| {
-            let cid = hooya::cid::encode(info.cid);
-            let size = info.size;
-            let mimetype = info.mimetype;
-            let ext_file = info.ext_file.map(|f| f.into());
-            let processing_status = info.processing_status;
-
-            proxy_response::CidInfoResponse {
-                cid,
-                size,
-                mimetype,
-                ext_file,
-                processing_status,
-            }
-        })
+        .map(file_info_to_response)
         .collect();
 
     let body = proxy_response::AllFilesResponse {
@@ -965,21 +906,7 @@ async fn search_files(
     let files = search_files_resp
         .files
         .into_iter()
-        .map(|info| {
-            let cid = hooya::cid::encode(info.cid);
-            let size = info.size;
-            let mimetype = info.mimetype;
-            let ext_file = info.ext_file.map(|f| f.into());
-            let processing_status = info.processing_status;
-
-            proxy_response::CidInfoResponse {
-                cid,
-                size,
-                mimetype,
-                ext_file,
-                processing_status,
-            }
-        })
+        .map(file_info_to_response)
         .collect();
 
     let body = proxy_response::AllFilesResponse {
@@ -1009,7 +936,7 @@ async fn start_upload(
     headers: HeaderMap,
     Json(payload): Json<StartUploadRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_jwt(&state, headers) {
+    if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
     }
 
@@ -1042,7 +969,7 @@ async fn upload_chunk(
     Path((upload_id, chunk_index)): Path<(String, String)>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_jwt(&state, headers) {
+    if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
     }
 
@@ -1076,7 +1003,7 @@ async fn complete_upload(
     headers: HeaderMap,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_jwt(&state, headers) {
+    if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
     }
 
@@ -1107,7 +1034,7 @@ async fn upload_status(
     headers: HeaderMap,
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_jwt(&state, headers) {
+    if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
     }
 
@@ -1137,13 +1064,9 @@ async fn processing_events(
     Path(encoded_cid): Path<String>,
     State(state): State<AState>,
 ) -> impl IntoResponse {
-    // convert cid string to bytes
-    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+    let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
-        _ => {
-            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
-                .into_response()
-        }
+        Err(e) => return e.into_response(),
     };
 
     // start grpc stream

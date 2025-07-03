@@ -18,7 +18,9 @@
       in {
         devShells.default = with pkgs; mkShell {
           buildInputs = [
-            rust-bin.stable."1.82.0".default
+            (rust-bin.stable."1.88.0".default.override {
+              extensions = [ "rust-src" ];
+            })
             openssl
             pkg-config
             ffmpeg
@@ -26,6 +28,7 @@
             protobuf
             gtk4
           ] ++ lib.optional isDarwin (with darwin.apple_sdk.frameworks; [ Security CoreServices ]);
+          RUST_SRC_PATH="${pkgs.rust-bin.stable."1.88.0".default}/lib/rustlib/src/rust/library";
         };
       }
     );
