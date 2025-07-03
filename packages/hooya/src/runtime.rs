@@ -1,15 +1,35 @@
 use crate::local::{
     self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow,
 };
-use crate::proto::{File, Tag, Thumbnail};
+use crate::proto::{File, ProcessingStatus, Tag, Thumbnail};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 
 pub struct Runtime {
     pub filestore_path: PathBuf,
     pub db: local::Db,
+    pub processing_events: broadcast::Sender<ProcessingEvent>,
+    pub processing_cids: Arc<RwLock<HashSet<Vec<u8>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessingEvent {
+    pub cid: Vec<u8>,
+    pub event_type: ProcessingEventType,
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProcessingEventType {
+    Started,
+    ThumbnailGenerated { long_edge: u32, mimetype: String },
+    VideoPreviewGenerated { long_edge: u32, mimetype: String },
+    Finished,
+    Failed,
 }
 
 impl Runtime {
@@ -37,6 +57,7 @@ impl Runtime {
             cid: cid.clone(),
             size,
             mimetype,
+            processing_status: ProcessingStatus::ProcessingStarted as i32,
             ext_file: None, // not processed yet sooo
         })
     }
@@ -62,6 +83,67 @@ impl Runtime {
         Ok(())
     }
 
+    pub fn emit_processing_event(
+        &self,
+        cid: Vec<u8>,
+        event_type: ProcessingEventType,
+        error: Option<String>,
+    ) {
+        let event = ProcessingEvent {
+            cid: cid.clone(),
+            event_type: event_type.clone(),
+            error_message: error,
+        };
+
+        // update processing cache
+        tokio::spawn({
+            let processing_cids = self.processing_cids.clone();
+            async move {
+                match event_type {
+                    ProcessingEventType::Started => {
+                        let mut cache = processing_cids.write().await;
+                        cache.insert(cid);
+                    }
+                    ProcessingEventType::ThumbnailGenerated { .. }
+                    | ProcessingEventType::VideoPreviewGenerated { .. } => {
+                        // don't remove from cache yet - still processing other sizes
+                    }
+                    ProcessingEventType::Finished
+                    | ProcessingEventType::Failed => {
+                        let mut cache = processing_cids.write().await;
+                        cache.remove(&cid);
+                    }
+                }
+            }
+        });
+
+        // ignore if no listeners
+        let _ = self.processing_events.send(event);
+    }
+
+    pub async fn get_processing_status(&self, cid: &[u8]) -> ProcessingStatus {
+        let processing_cids = self.processing_cids.read().await;
+        if processing_cids.contains(cid) {
+            ProcessingStatus::ProcessingStarted
+        } else {
+            ProcessingStatus::ProcessingFinished
+        }
+    }
+
+    pub fn get_processing_status_sync(&self, cid: &[u8]) -> ProcessingStatus {
+        // try non-blocking read, default to finished if lock is contended
+        match self.processing_cids.try_read() {
+            Ok(processing_cids) => {
+                if processing_cids.contains(cid) {
+                    ProcessingStatus::ProcessingStarted
+                } else {
+                    ProcessingStatus::ProcessingFinished
+                }
+            }
+            Err(_) => ProcessingStatus::ProcessingFinished, // conservative default
+        }
+    }
+
     pub async fn import_from_filestore(&self, cid: Vec<u8>) -> Result<()> {
         self.import_basic_file_record(cid.clone()).await?;
         self.process_file_background(cid).await?;
@@ -79,9 +161,11 @@ impl Runtime {
         // The reason for this cute misdirection is that indexed (ie local)
         // File may not always map 1-to-1 with the concept of Files on the network
         let file = File {
-            cid: file_row.cid,
+            cid: file_row.cid.clone(),
             mimetype: file_row.mimetype,
             size: file_row.size,
+            processing_status: self.get_processing_status_sync(&file_row.cid)
+                as i32,
             ext_file,
         };
 
@@ -193,9 +277,11 @@ impl Runtime {
             .await?
             .into_iter()
             .map(|f| crate::proto::File {
-                cid: f.cid,
+                cid: f.cid.clone(),
                 mimetype: f.mimetype,
                 size: f.size,
+                processing_status: self.get_processing_status_sync(&f.cid)
+                    as i32,
                 ext_file: None, // TODO INNER JOIN
             })
             .collect();
@@ -319,7 +405,7 @@ impl Runtime {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
 
-        let (files, final_page_token) = self
+        let (mut files, final_page_token) = self
             .db
             .files_page(
                 Some(query),
@@ -329,6 +415,12 @@ impl Runtime {
                 reverse_order,
             )
             .await?;
+
+        // update processing status with live cache
+        for file in &mut files {
+            file.processing_status =
+                self.get_processing_status_sync(&file.cid) as i32;
+        }
 
         let next_page_token = if page_number >= final_page_token {
             "".to_string()
@@ -348,10 +440,16 @@ impl Runtime {
     ) -> Result<(Vec<crate::proto::File>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
-        let (files, final_page_token) = self
+        let (mut files, final_page_token) = self
             .db
             .files_page(None, page_size, page_number, sort_order, reverse_order)
             .await?;
+
+        // update processing status with live cache
+        for file in &mut files {
+            file.processing_status =
+                self.get_processing_status_sync(&file.cid) as i32;
+        }
 
         let next_page_token = if page_number >= final_page_token {
             "".to_string()
@@ -407,9 +505,11 @@ impl Runtime {
             .await?
             .into_iter()
             .map(|f| crate::proto::File {
-                cid: f.cid,
+                cid: f.cid.clone(),
                 mimetype: f.mimetype,
                 size: f.size,
+                processing_status: self.get_processing_status_sync(&f.cid)
+                    as i32,
                 ext_file: None, // TODO INNER JOIN
             })
             .collect();
@@ -489,6 +589,16 @@ impl Runtime {
                     is_animated: true,
                 })
                 .await?;
+
+            // emit event for video preview generated
+            self.emit_processing_event(
+                cid.clone(),
+                ProcessingEventType::VideoPreviewGenerated {
+                    long_edge: t_size_long_edge,
+                    mimetype: mimetype.to_string(),
+                },
+                None,
+            );
         }
         Ok(())
     }
@@ -566,6 +676,16 @@ impl Runtime {
                     is_animated: false,
                 })
                 .await?;
+
+            // emit event for thumbnail generated
+            self.emit_processing_event(
+                cid.clone(),
+                ProcessingEventType::ThumbnailGenerated {
+                    long_edge: t_size_long_edge,
+                    mimetype: mimetype.to_string(),
+                },
+                None,
+            );
         }
 
         Ok(())

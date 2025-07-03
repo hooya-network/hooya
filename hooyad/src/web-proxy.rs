@@ -1,21 +1,25 @@
 use anyhow::Result;
 use axum::{
     extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, Method, StatusCode},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse,
+    },
     routing::{get, post, put},
     Form, Json, Router,
 };
 use bcrypt::verify;
 use clap::{command, value_parser, Arg, Command};
 use dotenv::dotenv;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
     CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
     ContentAtCidRequest, GetUploadStatusRequest, LocalFilePageRequest,
-    SearchQuery, SearchRequest, StartUploadSessionRequest, SuggestTagRequest,
-    Tag, TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
+    ProcessingEventsRequest, SearchQuery, SearchRequest,
+    StartUploadSessionRequest, SuggestTagRequest, Tag, TagQuery, TagsRequest,
+    Thumbnail, UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -24,6 +28,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tonic::transport::Channel;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 mod config;
 
 #[derive(Clone)]
@@ -69,6 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_parser(value_parser!(PathBuf))
                 .default_value(&**config::DEFAULT_DATA_DIR),
         )
+        .arg(
+            Arg::new("cors-origins")
+                .long("cors-origins")
+                .env("CORS_ORIGINS")
+                .help("CORS origins: 'localhost' for any localhost port, or comma-separated URLs")
+                .default_value("localhost"),
+        )
         .get_matches();
 
     // data dir
@@ -99,6 +111,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("generated operator password: {}", new_password);
     }
 
+    // configure CORS
+    let cors_origins = matches.get_one::<String>("cors-origins").unwrap();
+    let cors_layer = if cors_origins == "localhost" {
+        // allow any localhost port
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::predicate(|origin, _request_parts| {
+                let origin_str = origin.as_bytes();
+                origin_str.starts_with(b"http://localhost:")
+                    || origin_str.starts_with(b"https://localhost:")
+                    || origin_str == b"http://localhost"
+                    || origin_str == b"https://localhost"
+            }))
+            .allow_methods([Method::GET, Method::POST, Method::PUT])
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+            ])
+            .allow_credentials(true)
+    } else {
+        // parse specific origins
+        let origins: Result<Vec<_>, _> = cors_origins
+            .split(',')
+            .map(|s| s.trim().parse::<axum::http::HeaderValue>())
+            .collect();
+
+        match origins {
+            Ok(origins) => CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods([Method::GET, Method::POST, Method::PUT])
+                .allow_headers([
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::CONTENT_TYPE,
+                ])
+                .allow_credentials(true),
+            Err(_) => {
+                eprintln!("Invalid CORS origins format: {}", cors_origins);
+                std::process::exit(1);
+            }
+        }
+    };
+
     let app = Router::new()
         .route("/cid-content/:cid", get(cid_content))
         .route("/cid-thumbnail/:cid/medium", get(cid_thumbnail_medium))
@@ -118,6 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
+        .route("/api/events/processing/:cid", get(processing_events))
+        .layer(cors_layer)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
 
@@ -649,12 +704,14 @@ async fn cid_info(
     let size = info.size;
     let mimetype = info.mimetype;
     let ext_file = info.ext_file.map(|f| f.into());
+    let processing_status = info.processing_status;
 
     let body = proxy_response::CidInfoResponse {
         cid,
         size,
         mimetype,
         ext_file,
+        processing_status,
     };
 
     axum::Json(body).into_response()
@@ -718,12 +775,14 @@ async fn all_files(
             let size = info.size;
             let mimetype = info.mimetype;
             let ext_file = info.ext_file.map(|f| f.into());
+            let processing_status = info.processing_status;
 
             proxy_response::CidInfoResponse {
                 cid,
                 size,
                 mimetype,
                 ext_file,
+                processing_status,
             }
         })
         .collect();
@@ -911,12 +970,14 @@ async fn search_files(
             let size = info.size;
             let mimetype = info.mimetype;
             let ext_file = info.ext_file.map(|f| f.into());
+            let processing_status = info.processing_status;
 
             proxy_response::CidInfoResponse {
                 cid,
                 size,
                 mimetype,
                 ext_file,
+                processing_status,
             }
         })
         .collect();
@@ -1072,6 +1133,76 @@ async fn upload_status(
     }
 }
 
+async fn processing_events(
+    Path(encoded_cid): Path<String>,
+    State(state): State<AState>,
+) -> impl IntoResponse {
+    // convert cid string to bytes
+    let (_, cid) = match hooya::cid::decode(&encoded_cid) {
+        Ok(cid) => cid,
+        _ => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid CID")
+                .into_response()
+        }
+    };
+
+    // start grpc stream
+    let request = ProcessingEventsRequest { cid: cid.clone() };
+
+    let mut stream = match state.client.clone().processing_events(request).await
+    {
+        Ok(response) => response.into_inner(),
+        Err(_) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start processing stream",
+            )
+                .into_response()
+        }
+    };
+
+    // convert grpc stream to sse stream
+    let sse_stream = async_stream::stream! {
+
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    let event_name = match event.event_type {
+                        0 => "processing_finished",      // ProcessingStatus::ProcessingFinished = 0
+                        1 => "processing_started",       // ProcessingStatus::ProcessingStarted = 1
+                        2 => "processing_failed",        // ProcessingStatus::ProcessingFailed = 2
+                        3 => "thumbnail_generated",      // ProcessingStatus::ThumbnailGenerated = 3
+                        4 => "video_preview_generated",  // ProcessingStatus::VideoPreviewGenerated = 4
+                        _ => "unknown",
+                    };
+
+                    // include metadata for thumbnail/video events
+                    let event_data = match event.event_type {
+                        3 | 4 => { // thumbnail_generated or video_preview_generated
+                            format!("{{\"long_edge\":{},\"mimetype\":\"{}\"}}",
+                                event.long_edge.unwrap_or(0),
+                                event.mimetype.as_deref().unwrap_or("")
+                            )
+                        }
+                        _ => "{}".to_string()
+                    };
+
+                    let sse_event = Event::default()
+                        .event(event_name)
+                        .data(event_data);
+                    yield Ok(sse_event);
+                }
+                Err(e) => {
+                    yield Err(anyhow::anyhow!("grpc error: {}", e));
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(sse_stream).into_response()
+}
+
 mod proxy_response {
     use serde::{Deserialize, Serialize};
 
@@ -1101,6 +1232,7 @@ mod proxy_response {
         pub size: i64,
         pub mimetype: Option<String>,
         pub ext_file: Option<ExtFile>,
+        pub processing_status: i32,
     }
 
     #[derive(Serialize, Deserialize)]

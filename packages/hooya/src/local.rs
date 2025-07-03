@@ -3,7 +3,7 @@ use sqlx::{
     sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool,
 };
 
-use crate::proto::{file::ExtFile, File, Tag};
+use crate::proto::{file::ExtFile, File, ProcessingStatus, Tag};
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub struct TagRow {
@@ -646,6 +646,7 @@ impl Db {
                 cid: raw_file.try_get("Cid")?,
                 size: raw_file.try_get("Size")?,
                 mimetype: raw_file.try_get("Mimetype")?,
+                processing_status: Default::default(),
                 ext_file,
             });
         }

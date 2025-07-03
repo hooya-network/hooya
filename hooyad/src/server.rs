@@ -7,7 +7,8 @@ use hooya::proto::{
     CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
     CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
     ForgetFileRequest, GetUploadStatusReply, GetUploadStatusRequest,
-    LocalFilePageReply, LocalFilePageRequest, RandomLocalFileReply,
+    LocalFilePageReply, LocalFilePageRequest, ProcessingEvent,
+    ProcessingEventsRequest, ProcessingStatus, RandomLocalFileReply,
     RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
     SearchRequest, StartUploadSessionReply, StartUploadSessionRequest,
     StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest, TagCidReply,
@@ -586,10 +587,30 @@ impl Control for IControl {
         let runtime_clone = Arc::clone(&self.runtime);
         let cid_clone = cid.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                runtime_clone.process_file_background(cid_clone).await
+            runtime_clone.emit_processing_event(
+                cid_clone.clone(),
+                hooya::runtime::ProcessingEventType::Started,
+                None,
+            );
+
+            match runtime_clone
+                .process_file_background(cid_clone.clone())
+                .await
             {
-                eprintln!("background file processing failed: {}", e);
+                Ok(_) => {
+                    runtime_clone.emit_processing_event(
+                        cid_clone,
+                        hooya::runtime::ProcessingEventType::Finished,
+                        None,
+                    );
+                }
+                Err(e) => {
+                    runtime_clone.emit_processing_event(
+                        cid_clone,
+                        hooya::runtime::ProcessingEventType::Failed,
+                        Some(e.to_string()),
+                    );
+                }
             }
         });
 
@@ -631,6 +652,57 @@ impl Control for IControl {
         };
 
         Ok(Response::new(reply))
+    }
+
+    type ProcessingEventsStream =
+        Pin<Box<dyn Stream<Item = Result<ProcessingEvent, Status>> + Send>>;
+
+    async fn processing_events(
+        &self,
+        request: Request<ProcessingEventsRequest>,
+    ) -> Result<Response<Self::ProcessingEventsStream>, Status> {
+        let req = request.into_inner();
+        let target_cid = req.cid;
+
+        let rx = self.runtime.processing_events.subscribe();
+
+        use tokio_stream::wrappers::BroadcastStream;
+        let stream = BroadcastStream::new(rx)
+            .filter_map(move |result| {
+                match result {
+                    Ok(event) => {
+                        if event.cid == target_cid {
+                            let proto_event = ProcessingEvent {
+                                cid: event.cid.clone(),
+                                event_type: match &event.event_type {
+                                    hooya::runtime::ProcessingEventType::Started => ProcessingStatus::ProcessingStarted as i32,
+                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { .. } => ProcessingStatus::ThumbnailGenerated as i32,
+                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { .. } => ProcessingStatus::VideoPreviewGenerated as i32,
+                                    hooya::runtime::ProcessingEventType::Finished => ProcessingStatus::ProcessingFinished as i32,
+                                    hooya::runtime::ProcessingEventType::Failed => ProcessingStatus::ProcessingFailed as i32,
+                                },
+                                error_message: event.error_message.clone(),
+                                long_edge: match &event.event_type {
+                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { long_edge, .. } => Some(*long_edge),
+                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { long_edge, .. } => Some(*long_edge),
+                                    _ => None,
+                                },
+                                mimetype: match &event.event_type {
+                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                    _ => None,
+                                },
+                            };
+                            Some(Ok(proto_event))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None
+                }
+            });
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
@@ -682,10 +754,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.init_tables().await?;
     }
 
+    let (processing_events, _) = tokio::sync::broadcast::channel(1000);
+
     Server::builder()
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
-            runtime: Arc::new(Runtime { filestore_path, db }),
+            runtime: Arc::new(Runtime {
+                filestore_path,
+                db,
+                processing_events,
+                processing_cids: std::sync::Arc::new(tokio::sync::RwLock::new(
+                    std::collections::HashSet::new(),
+                )),
+            }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
