@@ -29,13 +29,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tonic::transport::Channel;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-mod config;
 
 #[derive(Clone)]
 struct AState {
     client: ControlClient<Channel>,
     jwt_secret: [u8; 32],
-    config: config::RuntimeConfig,
+    config: hooya_config::RuntimeConfig,
 }
 
 pub const DEFAULT_HOOYA_WEB_PROXY_ENDPOINT: &str = "0.0.0.0:8532";
@@ -59,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("hooyad-endpoint")
                 .long("endpoint")
                 .env("HOOYAD_ENDPOINT")
-                .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
+                .default_value(hooya_config::DEFAULT_HOOYAD_ENDPOINT),
         )
         .arg(
             Arg::new("proxy-endpoint")
@@ -72,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("data-dir")
                 .env("HOOYA_DATADIR")
                 .value_parser(value_parser!(PathBuf))
-                .default_value(&**config::DEFAULT_DATA_DIR),
+                .default_value(&**hooya_config::DEFAULT_DATA_DIR),
         )
         .arg(
             Arg::new("cors-origins")
@@ -85,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // data dir
     let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();
-    let config = config::RuntimeConfig::new(data_dir);
+    let config = hooya_config::RuntimeConfig::new(data_dir);
 
     if let Some(("set-password", sub_matches)) = matches.subcommand() {
         let password = sub_matches.get_one::<String>("password").unwrap();

@@ -6,7 +6,6 @@ use hooya::proto::{
     TagCidRequest,
 };
 use std::path::{Path, PathBuf};
-mod config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("endpoint")
                 .long("endpoint")
                 .env("HOOYAD_ENDPOINT")
-                .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
+                .default_value(hooya_config::DEFAULT_HOOYAD_ENDPOINT),
         )
         .subcommand(
             Command::new("add")

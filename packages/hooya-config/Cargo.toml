@@ -1,0 +1,11 @@
+[package]
+name = "hooya-config"
+version = "0.1.0-prealpha"
+edition = "2021"
+authors = ["wesl-ee <w@wesl.ee>"]
+
+[dependencies]
+once_cell = "1.0"
+user_dirs = "0.2"
+bcrypt = "0.17"
+rand = "0.8"

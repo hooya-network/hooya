@@ -27,7 +27,6 @@ use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 
-mod config;
 
 const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024; // 10MB max chunk size
 
@@ -715,14 +714,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("endpoint")
                 .long("endpoint")
                 .env("HOOYAD_ENDPOINT")
-                .default_value(config::DEFAULT_HOOYAD_ENDPOINT),
+                .default_value(hooya_config::DEFAULT_HOOYAD_ENDPOINT),
         )
         .arg(
             Arg::new("filestore")
                 .long("filestore")
                 .env("HOOYAD_FILESTORE")
                 .value_parser(value_parser!(PathBuf))
-                .default_value(&**config::DEFAULT_DATA_DIR),
+                .default_value(&**hooya_config::DEFAULT_DATA_DIR),
         )
         .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
         .get_matches();
@@ -731,7 +730,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filestore_path =
         matches.get_one::<PathBuf>("filestore").unwrap().clone();
 
-    let config = config::RuntimeConfig::new(filestore_path.clone());
+    let config = hooya_config::RuntimeConfig::new(filestore_path.clone());
     let default_db_uri = config.sqlite_uri();
 
     // Create filestore structure
