@@ -199,6 +199,7 @@ struct LoginData {
 struct ClaimData {
     user_id: u64,
     exp: usize,
+    iat: usize,
 }
 
 async fn login(
@@ -222,9 +223,11 @@ async fn login(
                 }
 
                 // issue new token with same user_id
+                let now = chrono::Utc::now().timestamp() as usize;
                 let claims = ClaimData {
                     user_id: token_data.claims.user_id,
-                    exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+                    exp: now + 3600, // 1hr
+                    iat: now,
                 };
 
                 match encode(
@@ -258,9 +261,11 @@ async fn login(
         };
 
         if verify(&password, &password_hash).unwrap_or(false) {
+            let now = chrono::Utc::now().timestamp() as usize;
             let claims = ClaimData {
                 user_id: 1,
-                exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+                exp: now + 3600, // 1hr
+                iat: now,
             };
 
             match encode(
