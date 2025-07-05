@@ -27,7 +27,6 @@ use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 
-
 const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024; // 10MB max chunk size
 
 struct UploadSession {

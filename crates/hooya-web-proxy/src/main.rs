@@ -93,8 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut jwt_secret = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut jwt_secret);
+    let jwt_secret = config.ensure_jwt_secret_exists()?;
     let state = AState {
         client: ControlClient::connect(format!(
             "http://{}",

@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use rand::RngCore;
 use std::fs;
 use std::path::PathBuf;
 
@@ -52,6 +53,10 @@ impl RuntimeConfig {
         self.data_dir.join("web-passwd")
     }
 
+    pub fn jwt_secret_path(&self) -> PathBuf {
+        self.data_dir.join("jwt-secret")
+    }
+
     pub fn store_password_hash(
         &self,
         password: &str,
@@ -93,5 +98,37 @@ impl RuntimeConfig {
 
         self.store_password_hash(&password)?;
         Ok(Some(password))
+    }
+
+    pub fn store_jwt_secret(
+        &self,
+        secret: &[u8; 32],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.ensure_data_dir()?;
+        fs::write(self.jwt_secret_path(), secret)?;
+        Ok(())
+    }
+
+    pub fn load_jwt_secret(&self) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+        let secret_bytes = fs::read(self.jwt_secret_path())?;
+        if secret_bytes.len() != 32 {
+            return Err("Invalid JWT secret length".into());
+        }
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
+        Ok(secret)
+    }
+
+    pub fn ensure_jwt_secret_exists(&self) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+        match self.load_jwt_secret() {
+            Ok(secret) => Ok(secret),
+            Err(_) => {
+                // generate new secret if file doesn't exist or is invalid
+                let mut secret = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut secret);
+                self.store_jwt_secret(&secret)?;
+                Ok(secret)
+            }
+        }
     }
 }
