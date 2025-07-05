@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ])
             .allow_credentials(true)
     } else {
-        // parse specific origins
+        // if not localhost, parse origins
         let origins: Result<Vec<_>, _> = cors_origins
             .split(',')
             .map(|s| s.trim().parse::<axum::http::HeaderValue>())
@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .allow_credentials(true),
             Err(_) => {
-                eprintln!("Invalid CORS origins format: {}", cors_origins);
+                eprintln!("invalid CORS origins format: {}", cors_origins);
                 std::process::exit(1);
             }
         }
@@ -191,7 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[derive(Deserialize)]
 struct LoginData {
-    password: String,
+    password: Option<String>,
+    refresh_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,34 +205,85 @@ async fn login(
     State(state): State<AState>,
     Form(payload): Form<LoginData>,
 ) -> impl IntoResponse {
-    let password_hash = match state.config.load_password_hash() {
-        Ok(hash) => hash,
-        Err(_) => {
-            return (StatusCode::PRECONDITION_FAILED, "Password not configured")
-                .into_response()
-        }
-    };
+    // check if this is a token refresh request
+    if let Some(refresh_token) = payload.refresh_token {
+        match decode::<ClaimData>(
+            &refresh_token,
+            &DecodingKey::from_secret(&state.jwt_secret),
+            &Validation::default(),
+        ) {
+            Ok(token_data) => {
+                // check if token is expired
+                if token_data.claims.exp
+                    < chrono::Utc::now().timestamp() as usize
+                {
+                    return (StatusCode::UNAUTHORIZED, "Token expired")
+                        .into_response();
+                }
 
-    if verify(&payload.password, &password_hash).unwrap_or(false) {
-        let claims = ClaimData {
-            user_id: 1,
-            exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+                // issue new token with same user_id
+                let claims = ClaimData {
+                    user_id: token_data.claims.user_id,
+                    exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+                };
+
+                match encode(
+                    &Header::default(),
+                    &claims,
+                    &EncodingKey::from_secret(&state.jwt_secret),
+                ) {
+                    Ok(token) => token.into_response(),
+                    Err(_) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to generate token",
+                    )
+                        .into_response(),
+                }
+            }
+            Err(_) => {
+                (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+            }
+        }
+    } else if let Some(password) = payload.password {
+        // password login flow
+        let password_hash = match state.config.load_password_hash() {
+            Ok(hash) => hash,
+            Err(_) => {
+                return (
+                    StatusCode::PRECONDITION_FAILED,
+                    "Password not configured",
+                )
+                    .into_response()
+            }
         };
 
-        match encode(
-            &Header::default(),
-            &claims,
-            &EncodingKey::from_secret(&state.jwt_secret),
-        ) {
-            Ok(token) => token.into_response(),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate token",
-            )
-                .into_response(),
+        if verify(&password, &password_hash).unwrap_or(false) {
+            let claims = ClaimData {
+                user_id: 1,
+                exp: chrono::Utc::now().timestamp() as usize + 3600, // 1hr
+            };
+
+            match encode(
+                &Header::default(),
+                &claims,
+                &EncodingKey::from_secret(&state.jwt_secret),
+            ) {
+                Ok(token) => token.into_response(),
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to generate token",
+                )
+                    .into_response(),
+            }
+        } else {
+            (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
         }
     } else {
-        (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
+        (
+            StatusCode::BAD_REQUEST,
+            "Password or refresh_token required",
+        )
+            .into_response()
     }
 }
 

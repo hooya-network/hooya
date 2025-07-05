@@ -109,7 +109,9 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    pub fn load_jwt_secret(&self) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    pub fn load_jwt_secret(
+        &self,
+    ) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         let secret_bytes = fs::read(self.jwt_secret_path())?;
         if secret_bytes.len() != 32 {
             return Err("Invalid JWT secret length".into());
@@ -119,7 +121,9 @@ impl RuntimeConfig {
         Ok(secret)
     }
 
-    pub fn ensure_jwt_secret_exists(&self) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    pub fn ensure_jwt_secret_exists(
+        &self,
+    ) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         match self.load_jwt_secret() {
             Ok(secret) => Ok(secret),
             Err(_) => {
