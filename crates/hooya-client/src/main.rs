@@ -85,6 +85,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .value_parser(value_parser!(hooya::proto::Tag)),
             ),
         )
+        .subcommand(
+            Command::new("untag")
+                .arg(Arg::new("cid").required(true))
+                .arg(
+                    Arg::new("tags")
+                        .action(ArgAction::Append)
+                        .required(true)
+                        .value_parser(value_parser!(hooya::proto::Tag)),
+                ),
+        )
         .subcommand(Command::new("dl").arg(Arg::new("cid").required(true)))
         .subcommand(
             Command::new("reimport").arg(Arg::new("cid").required(true)),
@@ -179,6 +189,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .collect();
             client.tag_cid(TagCidRequest { cid, tags }).await?;
+        }
+        Some(("untag", sub_matches)) => {
+            let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
+            let (_, cid) = hooya::cid::decode(encoded_cid)?;
+            let tags = sub_matches
+                .get_many::<hooya::proto::Tag>("tags")
+                .unwrap_or_default()
+                .cloned()
+                .collect();
+            client.untag_cid(TagCidRequest { cid, tags }).await?;
         }
         Some(("dl", sub_matches)) => {
             use std::fs::File;

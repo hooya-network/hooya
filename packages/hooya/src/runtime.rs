@@ -202,6 +202,14 @@ impl Runtime {
         Ok(())
     }
 
+    pub async fn untag_cid(&self, cid: Vec<u8>, tags: Vec<Tag>) -> Result<()> {
+        let tag_rows = self.db.lookup_tag_id(tags).await?;
+        let tag_ids: Vec<i32> = tag_rows.iter().map(|t| t.id).collect();
+
+        self.db.remove_tag_map(cid, &tag_ids).await?;
+        Ok(())
+    }
+
     async fn make_tag_map_rows(
         &self,
         cid: Vec<u8>,

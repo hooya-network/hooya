@@ -150,6 +150,29 @@ impl Control for IControl {
         Ok(Response::new(reply))
     }
 
+    async fn untag_cid(
+        &self,
+        r: Request<TagCidRequest>,
+    ) -> Result<Response<TagCidReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
+
+        let reply = TagCidReply {};
+
+        // Check that the CID is actually indexed before untagging it
+        runtime.indexed_file(req.cid.clone()).await.map_err(|_| {
+            Status::invalid_argument(
+                "CID is not indexed so it cannot be untagged",
+            )
+        })?;
+
+        runtime
+            .untag_cid(req.cid, req.tags)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(reply))
+    }
+
     type ContentAtCidStream =
         Pin<Box<dyn Stream<Item = Result<FileChunk, Status>> + Send + 'static>>;
     async fn content_at_cid(

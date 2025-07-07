@@ -6,7 +6,7 @@ use axum::{
         sse::{Event, Sse},
         IntoResponse,
     },
-    routing::{get, post, put},
+    routing::{delete, get, patch, post, put},
     Form, Json, Router,
 };
 use bcrypt::verify;
@@ -121,7 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     || origin_str == b"http://localhost"
                     || origin_str == b"https://localhost"
             }))
-            .allow_methods([Method::GET, Method::POST, Method::PUT])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+            ])
             .allow_headers([
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
@@ -137,7 +143,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match origins {
             Ok(origins) => CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
-                .allow_methods([Method::GET, Method::POST, Method::PUT])
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::PATCH,
+                    Method::DELETE,
+                ])
                 .allow_headers([
                     axum::http::header::AUTHORIZATION,
                     axum::http::header::CONTENT_TYPE,
@@ -164,7 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/suggest-tag/:query", get(suggest_tag_with_query))
         .route("/suggest-tag", get(suggest_tag))
         .route("/login", post(login))
-        .route("/tag-cid/:cid", post(tag_cid))
+        .route("/tag-cid/:cid", patch(tag_cid))
+        .route("/tag-cid/:cid", delete(untag_cid))
         .route("/start-upload", post(start_upload))
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
@@ -350,8 +363,12 @@ fn parse_tag_form_data(body: &str) -> Vec<TagData> {
 
     for pair in body.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
-            let key = urlencoding::decode(key).unwrap_or_default();
-            let value = urlencoding::decode(value).unwrap_or_default();
+            let key = urlencoding::decode(key)
+                .unwrap_or_default()
+                .replace("+", " ");
+            let value = urlencoding::decode(value)
+                .unwrap_or_default()
+                .replace("+", " ");
 
             // Parse tags[0][namespace] format
             if key.starts_with("tags[") {
@@ -428,6 +445,43 @@ async fn tag_cid(
     {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to tag CID")
+            .into_response(),
+    }
+}
+
+async fn untag_cid(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Path(encoded_cid): Path<String>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let cid = match decode_cid_param(&encoded_cid) {
+        Ok(cid) => cid,
+        Err(e) => return e.into_response(),
+    };
+
+    let body_str = String::from_utf8_lossy(&body);
+    let tag_data = parse_tag_form_data(&body_str);
+
+    let tags: Vec<Tag> = tag_data
+        .into_iter()
+        .map(|t| Tag {
+            namespace: t.namespace,
+            descriptor: t.descriptor,
+        })
+        .collect();
+
+    match state
+        .client
+        .untag_cid(hooya::proto::TagCidRequest { cid, tags })
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to untag CID")
             .into_response(),
     }
 }

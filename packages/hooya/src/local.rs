@@ -226,6 +226,25 @@ impl Db {
         Ok(())
     }
 
+    pub async fn remove_tag_map(
+        &self,
+        file_cid: Vec<u8>,
+        tag_ids: &[i32],
+    ) -> Result<()> {
+        for tag_id in tag_ids {
+            sqlx::query(
+                r#"
+                DELETE FROM TagMap WHERE FileCid = ? AND TagId = ?"#,
+            )
+            .bind(&file_cid)
+            .bind(tag_id)
+            .execute(&self.executor)
+            .await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn new_thumbnail(&self, thumbnail: ThumbnailRow) -> Result<()> {
         sqlx::query(
             r#"
