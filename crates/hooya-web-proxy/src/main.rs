@@ -333,15 +333,73 @@ fn require_auth(
 }
 
 #[derive(Deserialize)]
+struct TagData {
+    namespace: String,
+    descriptor: String,
+}
+
+#[derive(Deserialize)]
 struct TagCidData {
-    tags: Vec<Tag>,
+    tags: Vec<TagData>,
+}
+
+fn parse_tag_form_data(body: &str) -> Vec<TagData> {
+    use std::collections::HashMap;
+
+    let mut tags_map: HashMap<usize, HashMap<String, String>> = HashMap::new();
+
+    for pair in body.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            let key = urlencoding::decode(key).unwrap_or_default();
+            let value = urlencoding::decode(value).unwrap_or_default();
+
+            // Parse tags[0][namespace] format
+            if key.starts_with("tags[") {
+                if let Some(rest) = key.strip_prefix("tags[") {
+                    if let Some((index_str, field_part)) = rest.split_once("][")
+                    {
+                        if let Ok(index) = index_str.parse::<usize>() {
+                            if let Some(field) = field_part.strip_suffix(']') {
+                                tags_map
+                                    .entry(index)
+                                    .or_insert_with(HashMap::new)
+                                    .insert(
+                                        field.to_string(),
+                                        value.to_string(),
+                                    );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tags = Vec::new();
+    let mut indices: Vec<_> = tags_map.keys().collect();
+    indices.sort();
+
+    for &index in indices {
+        if let Some(tag_fields) = tags_map.get(&index) {
+            if let (Some(namespace), Some(descriptor)) =
+                (tag_fields.get("namespace"), tag_fields.get("descriptor"))
+            {
+                tags.push(TagData {
+                    namespace: namespace.clone(),
+                    descriptor: descriptor.clone(),
+                });
+            }
+        }
+    }
+
+    tags
 }
 
 async fn tag_cid(
     State(mut state): State<AState>,
     headers: HeaderMap,
     Path(encoded_cid): Path<String>,
-    Form(payload): Form<TagCidData>,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
         return e.into_response();
@@ -352,14 +410,26 @@ async fn tag_cid(
         Err(e) => return e.into_response(),
     };
 
-    let tags = payload.tags;
-    state
+    let body_str = String::from_utf8_lossy(&body);
+    let tag_data = parse_tag_form_data(&body_str);
+
+    let tags: Vec<Tag> = tag_data
+        .into_iter()
+        .map(|t| Tag {
+            namespace: t.namespace,
+            descriptor: t.descriptor,
+        })
+        .collect();
+
+    match state
         .client
         .tag_cid(hooya::proto::TagCidRequest { cid, tags })
         .await
-        .unwrap();
-
-    StatusCode::CREATED.into_response()
+    {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to tag CID")
+            .into_response(),
+    }
 }
 
 async fn cid_content(
