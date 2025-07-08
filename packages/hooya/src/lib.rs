@@ -9,6 +9,7 @@ pub use chunked_reader::*;
 pub mod cid;
 pub mod client;
 pub mod image;
+pub mod keys;
 pub mod local;
 pub mod runtime;
 pub mod video;

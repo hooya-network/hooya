@@ -1015,4 +1015,25 @@ impl Db {
 
         Ok(file_rows)
     }
+
+    pub async fn count_files(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM Files")
+            .fetch_one(&self.executor)
+            .await?;
+        Ok(row.get("count"))
+    }
+
+    pub async fn count_tags(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM Tags")
+            .fetch_one(&self.executor)
+            .await?;
+        Ok(row.get("count"))
+    }
+
+    pub async fn count_tag_associations(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM TagMap")
+            .fetch_one(&self.executor)
+            .await?;
+        Ok(row.get("count"))
+    }
 }

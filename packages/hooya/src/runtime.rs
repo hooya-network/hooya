@@ -1,12 +1,15 @@
+use crate::keys;
 use crate::local::{
     self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow,
 };
 use crate::proto::{File, ProcessingStatus, Tag, Thumbnail};
 use anyhow::Result;
+use hooya_config::HooyaConfig;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use sylow::KeyPair;
 use tokio::sync::{broadcast, RwLock};
 
 pub struct Runtime {
@@ -14,6 +17,9 @@ pub struct Runtime {
     pub db: local::Db,
     pub processing_events: broadcast::Sender<ProcessingEvent>,
     pub processing_cids: Arc<RwLock<HashSet<Vec<u8>>>>,
+    pub node_keypair: KeyPair,
+    pub consensus_keypair: Option<KeyPair>,
+    pub config: HooyaConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -764,5 +770,32 @@ impl Runtime {
         };
 
         Ok(ret)
+    }
+
+    /// Get the full node ID derived from the node keypair
+    pub fn node_id(&self) -> String {
+        keys::derive_node_id(&self.node_keypair)
+    }
+
+    /// Get the node public key as hex string
+    pub fn node_pubkey_hex(&self) -> String {
+        keys::keypair_pubkey_to_hex(&self.node_keypair)
+    }
+
+    /// Get the consensus public key as hex string (if available)
+    pub fn consensus_pubkey_hex(&self) -> Option<String> {
+        self.consensus_keypair
+            .as_ref()
+            .map(|kp| keys::keypair_pubkey_to_hex(kp))
+    }
+
+    /// Get the instance name from configuration
+    pub fn instance_name(&self) -> &str {
+        &self.config.instance.name
+    }
+
+    /// Get the operator name from configuration
+    pub fn operator_name(&self) -> &str {
+        &self.config.instance.operator
     }
 }

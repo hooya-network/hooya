@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
@@ -81,10 +82,10 @@ impl RuntimeConfig {
         let hash_file = self.web_password_hash_path();
 
         if hash_file.exists() {
-            return Ok(None); // Password already exists
+            return Ok(None); // password already exists
         }
 
-        // Generate new password
+        // generate new password
         use rand::Rng;
         const CHARSET: &[u8] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -133,6 +134,59 @@ impl RuntimeConfig {
                 self.store_jwt_secret(&secret)?;
                 Ok(secret)
             }
+        }
+    }
+
+    pub fn hooya_config_path(&self) -> PathBuf {
+        self.data_dir.join("hooya.toml")
+    }
+
+    pub fn load_hooya_config(
+        &self,
+    ) -> Result<HooyaConfig, Box<dyn std::error::Error>> {
+        let config_path = self.hooya_config_path();
+
+        if config_path.exists() {
+            let content = fs::read_to_string(&config_path)?;
+            let config: HooyaConfig = toml::from_str(&content)?;
+            Ok(config)
+        } else {
+            // create default config if it doesn't exist
+            let default_config = HooyaConfig::default();
+            self.save_hooya_config(&default_config)?;
+            Ok(default_config)
+        }
+    }
+
+    pub fn save_hooya_config(
+        &self,
+        config: &HooyaConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.ensure_data_dir()?;
+        let toml_content = toml::to_string_pretty(config)?;
+        fs::write(self.hooya_config_path(), toml_content)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HooyaConfig {
+    pub instance: InstanceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceConfig {
+    pub name: String,
+    pub operator: String,
+}
+
+impl Default for HooyaConfig {
+    fn default() -> Self {
+        Self {
+            instance: InstanceConfig {
+                name: "hooya".to_string(),
+                operator: "anonymous".to_string(),
+            },
         }
     }
 }

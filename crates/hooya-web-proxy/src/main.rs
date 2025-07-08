@@ -18,8 +18,8 @@ use hooya::proto::{
     CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
     ContentAtCidRequest, GetUploadStatusRequest, LocalFilePageRequest,
     ProcessingEventsRequest, SearchQuery, SearchRequest,
-    StartUploadSessionRequest, SuggestTagRequest, Tag, TagQuery, TagsRequest,
-    Thumbnail, UploadChunkRequest,
+    StartUploadSessionRequest, SuggestTagRequest, SystemInfoRequest, Tag,
+    TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -183,6 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
         .route("/api/events/processing/:cid", get(processing_events))
+        .route("/api/system-info", get(system_info))
         .layer(cors_layer)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
@@ -358,10 +359,8 @@ fn parse_tag_form_data(body: &str) -> Vec<TagData> {
 
     for pair in body.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
-            let key = urlencoding::decode(key)
-                .unwrap_or_default();
-            let value = urlencoding::decode(value)
-                .unwrap_or_default();
+            let key = urlencoding::decode(key).unwrap_or_default();
+            let value = urlencoding::decode(value).unwrap_or_default();
 
             // Parse tags[0][namespace] format
             if key.starts_with("tags[") {
@@ -1304,6 +1303,49 @@ async fn processing_events(
     };
 
     Sse::new(sse_stream).into_response()
+}
+
+async fn system_info(State(state): State<AState>) -> impl IntoResponse {
+    let request = tonic::Request::new(SystemInfoRequest {});
+
+    match state.client.clone().get_system_info(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+
+            // create response with web-proxy version info added
+            let response_body = serde_json::json!({
+                "instance_name": reply.instance_name,
+                "operator_name": reply.operator_name,
+                "node_id": reply.node_id,
+                "stats": {
+                    "files_indexed": reply.stats.as_ref().map_or(0, |s| s.files_indexed),
+                    "associations_count": reply.stats.as_ref().map_or(0, |s| s.associations_count),
+                    "tags_count": reply.stats.as_ref().map_or(0, |s| s.tags_count),
+                },
+                "daemon_version": {
+                    "version_string": reply.daemon_version.as_ref().map_or("unknown".to_string(), |v| v.version_string.clone()),
+                    "major": reply.daemon_version.as_ref().map_or(0, |v| v.major),
+                    "minor": reply.daemon_version.as_ref().map_or(0, |v| v.minor),
+                    "patch": reply.daemon_version.as_ref().map_or(0, |v| v.patch),
+                    "pre": reply.daemon_version.as_ref().map_or("".to_string(), |v| v.pre.clone()),
+                },
+                "webui_version": {
+                    "version_string": format!("hooya-web-proxy v{}", env!("CARGO_PKG_VERSION")),
+                    "major": env!("CARGO_PKG_VERSION_MAJOR").parse::<u64>().unwrap_or(0),
+                    "minor": env!("CARGO_PKG_VERSION_MINOR").parse::<u64>().unwrap_or(0),
+                    "patch": env!("CARGO_PKG_VERSION_PATCH").parse::<u64>().unwrap_or(0),
+                    "pre": env!("CARGO_PKG_VERSION_PRE").to_string(),
+                }
+            });
+
+            Json(response_body).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get system info: {}", err),
+        )
+            .into_response(),
+    }
 }
 
 mod proxy_response {

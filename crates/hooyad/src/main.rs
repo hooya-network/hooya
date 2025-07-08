@@ -11,9 +11,11 @@ use hooya::proto::{
     ProcessingEventsRequest, ProcessingStatus, RandomLocalFileReply,
     RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
     SearchRequest, StartUploadSessionReply, StartUploadSessionRequest,
-    StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest, TagCidReply,
+    StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest,
+    SystemInfoReply, SystemInfoRequest, SystemStats, TagCidReply,
     TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
-    UploadChunkRequest, UploadStatus, VersionReply, VersionRequest,
+    UploadChunkRequest, UploadStatus, VersionInfo, VersionReply,
+    VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -62,6 +64,54 @@ impl Control for IControl {
                 .parse::<u64>()
                 .unwrap(),
             pre_version: env!("CARGO_PKG_VERSION_PRE").to_string(),
+        };
+
+        Ok(Response::new(reply))
+    }
+
+    async fn get_system_info(
+        &self,
+        _: Request<SystemInfoRequest>,
+    ) -> Result<Response<SystemInfoReply>, Status> {
+        let runtime = &self.runtime;
+
+        let files_count = runtime
+            .db
+            .count_files()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let tags_count = runtime
+            .db
+            .count_tags()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let associations_count = runtime
+            .db
+            .count_tag_associations()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let stats = SystemStats {
+            files_indexed: files_count,
+            associations_count,
+            tags_count,
+        };
+
+        // version info
+        let daemon_version = VersionInfo {
+            version_string: format!("hooyad v{}", env!("CARGO_PKG_VERSION")),
+            major: env!("CARGO_PKG_VERSION_MAJOR").parse::<u64>().unwrap(),
+            minor: env!("CARGO_PKG_VERSION_MINOR").parse::<u64>().unwrap(),
+            patch: env!("CARGO_PKG_VERSION_PATCH").parse::<u64>().unwrap(),
+            pre: env!("CARGO_PKG_VERSION_PRE").to_string(),
+        };
+
+        let reply = SystemInfoReply {
+            instance_name: runtime.instance_name().to_string(),
+            operator_name: runtime.operator_name().to_string(),
+            node_id: runtime.node_id(),
+            stats: Some(stats),
+            daemon_version: Some(daemon_version),
         };
 
         Ok(Response::new(reply))
@@ -777,6 +827,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (processing_events, _) = tokio::sync::broadcast::channel(1000);
 
+    // initialize BLS keys for node identity
+    let (node_keypair, consensus_keypair) =
+        hooya::keys::initialize_keys(&filestore_path)?;
+
+    // load configuration
+    let runtime_config =
+        hooya_config::RuntimeConfig::new(filestore_path.clone());
+    let config = runtime_config.load_hooya_config()?;
+
     Server::builder()
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
@@ -787,6 +846,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 processing_cids: std::sync::Arc::new(tokio::sync::RwLock::new(
                     std::collections::HashSet::new(),
                 )),
+                node_keypair,
+                consensus_keypair,
+                config,
             }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))
