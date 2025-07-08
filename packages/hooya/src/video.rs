@@ -40,85 +40,104 @@ pub fn preview(
     let step = duration / 5.0;
     let timestamps = [step, 2.0 * step, 3.0 * step, 4.0 * step];
 
-    let mut command = Command::new("ffmpeg");
-    command.arg("-i").arg(in_video_str).arg("-y");
+    // codec fallbacks
+    let codec_configs = [
+        (
+            "libsvtav1",
+            "aac",
+            vec!["-b:v", "1M", "-preset", "8", "-r", "30"],
+        ),
+        (
+            "libvpx-vp9",
+            "libopus",
+            vec!["-b:v", "1M", "-crf", "30", "-b:a", "96k"],
+        ),
+        ("libx265", "aac", vec!["-b:v", "1M", "-preset", "medium"]),
+    ];
 
-    // Don't snip previews if less than this 16s
-    if duration > 16.0 {
-        if audio_tracks > 0 {
-            // Sound on
-            command.args([
-                "-filter_complex",
-                &format!(
-                    "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
-                     [0:a]atrim=start={t1}:end={t2},asetpts=PTS-STARTPTS[a1];\
-                     [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
-                     [0:a]atrim=start={t3}:end={t4},asetpts=PTS-STARTPTS[a2];\
-                     [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
-                     [0:a]atrim=start={t5}:end={t6},asetpts=PTS-STARTPTS[a3];\
-                     [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
-                     [0:a]atrim=start={t7}:end={t8},asetpts=PTS-STARTPTS[a4];\
-                     [v1][a1][v2][a2][v3][a3][v4][a4]concat=n=4:v=1:a=1[outv][outa]",
-                    t1 = timestamps[0],
-                    t2 = timestamps[0] + 2.0,
-                    t3 = timestamps[1],
-                    t4 = timestamps[1] + 2.0,
-                    t5 = timestamps[2],
-                    t6 = timestamps[2] + 2.0,
-                    t7 = timestamps[3],
-                    t8 = timestamps[3] + 2.0,
-                    w = scaled_width,
-                    h = scaled_height
-                ),
-                "-map", "[outv]",
-                "-map", "[outa]"
-            ]);
+    for (video_codec, audio_codec, codec_params) in codec_configs {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-i").arg(in_video_str).arg("-y");
+
+        if duration > 16.0 {
+            if audio_tracks > 0 {
+                cmd.args([
+                    "-filter_complex",
+                    &format!(
+                        "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
+                         [0:a]atrim=start={t1}:end={t2},asetpts=PTS-STARTPTS[a1];\
+                         [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
+                         [0:a]atrim=start={t3}:end={t4},asetpts=PTS-STARTPTS[a2];\
+                         [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
+                         [0:a]atrim=start={t5}:end={t6},asetpts=PTS-STARTPTS[a3];\
+                         [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
+                         [0:a]atrim=start={t7}:end={t8},asetpts=PTS-STARTPTS[a4];\
+                         [v1][a1][v2][a2][v3][a3][v4][a4]concat=n=4:v=1:a=1[outv][outa]",
+                        t1 = timestamps[0],
+                        t2 = timestamps[0] + 2.0,
+                        t3 = timestamps[1],
+                        t4 = timestamps[1] + 2.0,
+                        t5 = timestamps[2],
+                        t6 = timestamps[2] + 2.0,
+                        t7 = timestamps[3],
+                        t8 = timestamps[3] + 2.0,
+                        w = scaled_width,
+                        h = scaled_height
+                    ),
+                    "-map", "[outv]",
+                    "-map", "[outa]"
+                ]);
+            } else {
+                cmd.args([
+                    "-filter_complex",
+                    &format!(
+                        "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
+                         [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
+                         [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
+                         [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
+                         [v1][v2][v3][v4]concat=n=4:v=1:a=0[outv]",
+                        t1 = timestamps[0],
+                        t2 = timestamps[0] + 2.0,
+                        t3 = timestamps[1],
+                        t4 = timestamps[1] + 2.0,
+                        t5 = timestamps[2],
+                        t6 = timestamps[2] + 2.0,
+                        t7 = timestamps[3],
+                        t8 = timestamps[3] + 2.0,
+                        w = scaled_width,
+                        h = scaled_height
+                    ),
+                    "-map", "[outv]"
+                ]);
+            }
         } else {
-            // No sound
-            command.args([
-                "-filter_complex",
-                &format!(
-                    "[0:v]trim=start={t1}:end={t2},setpts=PTS-STARTPTS,scale={w}:{h}[v1];\
-                     [0:v]trim=start={t3}:end={t4},setpts=PTS-STARTPTS,scale={w}:{h}[v2];\
-                     [0:v]trim=start={t5}:end={t6},setpts=PTS-STARTPTS,scale={w}:{h}[v3];\
-                     [0:v]trim=start={t7}:end={t8},setpts=PTS-STARTPTS,scale={w}:{h}[v4];\
-                     [v1][v2][v3][v4]concat=n=4:v=1:a=0[outv]",
-                    t1 = timestamps[0],
-                    t2 = timestamps[0] + 2.0,
-                    t3 = timestamps[1],
-                    t4 = timestamps[1] + 2.0,
-                    t5 = timestamps[2],
-                    t6 = timestamps[2] + 2.0,
-                    t7 = timestamps[3],
-                    t8 = timestamps[3] + 2.0,
-                    w = scaled_width,
-                    h = scaled_height
-                ),
-                "-map", "[outv]"
+            cmd.args([
+                "-vf",
+                &format!("scale={w}:{h}", w = scaled_width, h = scaled_height),
             ]);
         }
-    } else {
-        // Don't snip here because duration is short
-        command.args([
-            "-vf",
-            &format!("scale={w}:{h}", w = scaled_width, h = scaled_height),
-        ]);
+
+        cmd.arg("-c:v").arg(video_codec);
+
+        // codec-specific parameters
+        cmd.args(codec_params);
+
+        // Only add audio codec if we have audio tracks
+        if audio_tracks > 0 {
+            cmd.arg("-c:a").arg(audio_codec);
+        }
+
+        cmd.arg("-f").arg("mp4").arg(out_file_str);
+
+        let status = cmd.status()?;
+        if status.success() {
+            return Ok((scaled_height, scaled_width));
+        }
     }
 
-    command
-        .arg("-c:v")
-        .arg("libsvtav1")
-        .arg("-f")
-        .arg("mp4")
-        .arg(out_file_str);
-
-    // Execute command
-    let status = command.status()?;
-    if status.success() {
-        Ok((scaled_height, scaled_width))
-    } else {
-        Err(anyhow::anyhow!("ffmpeg command failed"))
-    }
+    Err(anyhow::anyhow!(
+        "ffmpeg command failed with all codec combinations"
+    ))
 }
 
 pub fn extract_video_metadata(in_video: &Path) -> Result<VideoMetadata> {
