@@ -351,11 +351,6 @@ struct TagData {
     descriptor: String,
 }
 
-#[derive(Deserialize)]
-struct TagCidData {
-    tags: Vec<TagData>,
-}
-
 fn parse_tag_form_data(body: &str) -> Vec<TagData> {
     use std::collections::HashMap;
 
@@ -364,11 +359,9 @@ fn parse_tag_form_data(body: &str) -> Vec<TagData> {
     for pair in body.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
             let key = urlencoding::decode(key)
-                .unwrap_or_default()
-                .replace("+", " ");
+                .unwrap_or_default();
             let value = urlencoding::decode(value)
-                .unwrap_or_default()
-                .replace("+", " ");
+                .unwrap_or_default();
 
             // Parse tags[0][namespace] format
             if key.starts_with("tags[") {
@@ -433,7 +426,11 @@ async fn tag_cid(
     let tags: Vec<Tag> = tag_data
         .into_iter()
         .map(|t| Tag {
-            namespace: t.namespace,
+            namespace: if !t.namespace.is_empty() {
+                t.namespace
+            } else {
+                "general".to_string()
+            },
             descriptor: t.descriptor,
         })
         .collect();
@@ -470,7 +467,11 @@ async fn untag_cid(
     let tags: Vec<Tag> = tag_data
         .into_iter()
         .map(|t| Tag {
-            namespace: t.namespace,
+            namespace: if !t.namespace.is_empty() {
+                t.namespace
+            } else {
+                "general".to_string()
+            },
             descriptor: t.descriptor,
         })
         .collect();
