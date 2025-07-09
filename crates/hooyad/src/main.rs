@@ -306,6 +306,9 @@ impl Control for IControl {
     ) -> Result<Response<AllFilesReply>, Status> {
         let req = r.into_inner();
 
+        let visibility_filter =
+            hooya::visibility::VisibilityFilter::new(req.visibility_filter);
+
         let (files, next_page_token, final_page_token) = self
             .runtime
             .all_files_page(
@@ -313,6 +316,7 @@ impl Control for IControl {
                 req.page_token,
                 req.sort_order,
                 req.reverse_order,
+                visibility_filter,
             )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -332,6 +336,9 @@ impl Control for IControl {
     ) -> Result<Response<AllTagsReply>, Status> {
         let req = r.into_inner();
 
+        let visibility_filter =
+            hooya::visibility::VisibilityFilter::new(req.visibility_filter);
+
         let (tags, next_page_token, final_page_token) = self
             .runtime
             .all_tags_page(
@@ -339,6 +346,7 @@ impl Control for IControl {
                 req.page_token,
                 req.sort_order,
                 req.reverse_order,
+                visibility_filter,
             )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -431,6 +439,9 @@ impl Control for IControl {
             .search_query
             .ok_or_else(|| Status::invalid_argument("No query specified"))?;
 
+        let visibility_filter =
+            hooya::visibility::VisibilityFilter::new(req.visibility_filter);
+
         let (files, next_page_token, final_page_token) = self
             .runtime
             .search_page(
@@ -439,6 +450,7 @@ impl Control for IControl {
                 req.page_token,
                 req.sort_order,
                 req.reverse_order,
+                visibility_filter,
             )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -459,6 +471,8 @@ impl Control for IControl {
         let req = r.into_inner();
         let existing_tags = req.tag_query;
         let suggest_string = req.suggest_string;
+        let visibility_filter =
+            hooya::visibility::VisibilityFilter::new(req.visibility_filter);
 
         let tag_suggestion = match suggest_string.split_once(':') {
             Some((namespace, incomplete_descriptor)) => self
@@ -467,6 +481,7 @@ impl Control for IControl {
                     &existing_tags,
                     namespace.to_string(),
                     incomplete_descriptor.to_string(),
+                    visibility_filter,
                 )
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?,
@@ -476,12 +491,13 @@ impl Control for IControl {
                         .suggest_tags_without_namespace(
                             &existing_tags,
                             &suggest_string,
+                            visibility_filter,
                         )
                         .await
                         .map_err(|e| Status::internal(e.to_string()))?
                 } else {
                     self.runtime
-                        .suggest_all_tags()
+                        .suggest_all_tags(visibility_filter)
                         .await
                         .map_err(|e| Status::internal(e.to_string()))?
                 }
@@ -659,6 +675,14 @@ impl Control for IControl {
             .import_basic_file_record(cid.clone())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Apply tags if provided
+        if !req.tags.is_empty() {
+            self.runtime
+                .tag_cid(cid.clone(), req.tags.clone())
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
 
         // Spawn background processing for thumbnails
         let runtime_clone = Arc::clone(&self.runtime);

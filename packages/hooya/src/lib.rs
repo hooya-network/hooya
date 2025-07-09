@@ -13,6 +13,7 @@ pub mod keys;
 pub mod local;
 pub mod runtime;
 pub mod video;
+pub mod visibility;
 
 impl From<&str> for proto::Tag {
     fn from(tag_str: &str) -> Self {

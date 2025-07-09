@@ -309,6 +309,7 @@ impl Runtime {
         existing_tags: &[crate::proto::TagQuery],
         within_namespace: String,
         incomplete_descriptor: String,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
         // CASE - User was typing a descriptor with a qualified namespace
         let mut suggestions = self
@@ -317,6 +318,7 @@ impl Runtime {
                 existing_tags,
                 Some(within_namespace),
                 &incomplete_descriptor,
+                visibility_filter,
             )
             .await?;
 
@@ -337,9 +339,11 @@ impl Runtime {
 
     pub async fn suggest_all_tags(
         &self,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
         // CASE - User was typing a descriptor with a qualified namespace
-        let mut suggestions = self.db.get_most_popular_tags().await?;
+        let mut suggestions =
+            self.db.get_most_popular_tags(visibility_filter).await?;
 
         suggestions.sort_unstable_by(|a, b| b.count.cmp(&a.count));
 
@@ -359,6 +363,7 @@ impl Runtime {
         &self,
         existing_tags: &[crate::proto::TagQuery],
         suggest_string: &str,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<Vec<crate::proto::TagSuggestion>> {
         // Hashed on tag ID because we don't want to return the same tag twice
         let mut suggestions: HashMap<i32, crate::local::TagRowCount> =
@@ -372,6 +377,7 @@ impl Runtime {
             .get_most_popular_tags_within_namespace_that_starts_with(
                 existing_tags,
                 suggest_string,
+                visibility_filter,
             )
             .await?
             .into_iter()
@@ -383,6 +389,7 @@ impl Runtime {
                 existing_tags,
                 None,
                 suggest_string,
+                visibility_filter,
             )
             .await?
             .into_iter()
@@ -416,6 +423,7 @@ impl Runtime {
         page_token: String,
         sort_order: i32,
         reverse_order: bool,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<(Vec<crate::proto::File>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
@@ -428,6 +436,7 @@ impl Runtime {
                 page_number,
                 sort_order,
                 reverse_order,
+                visibility_filter,
             )
             .await?;
 
@@ -452,12 +461,20 @@ impl Runtime {
         page_token: String,
         sort_order: i32,
         reverse_order: bool,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<(Vec<crate::proto::File>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
         let (mut files, final_page_token) = self
             .db
-            .files_page(None, page_size, page_number, sort_order, reverse_order)
+            .files_page(
+                None,
+                page_size,
+                page_number,
+                sort_order,
+                reverse_order,
+                visibility_filter,
+            )
             .await?;
 
         // update processing status with live cache
@@ -481,12 +498,19 @@ impl Runtime {
         page_token: String,
         sort_order: i32,
         reverse_order: bool,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<(Vec<crate::proto::TagInfo>, String, u32)> {
         // I don't see a reason to not work with pages as simply numbers
         let page_number: u32 = page_token.parse()?;
         let (tags, final_page_token) = self
             .db
-            .tags_page(page_size, page_number, sort_order, reverse_order)
+            .tags_page(
+                page_size,
+                page_number,
+                sort_order,
+                reverse_order,
+                visibility_filter,
+            )
             .await?;
 
         let tags_info = tags
@@ -884,7 +908,6 @@ impl Runtime {
         std::fs::rename(&current_path, &forgotten_path)?;
 
         // clean up thumbnails from filesystem
-        let encoded_cid = crate::cid::encode(&cid);
         for size in [1280, 640, 320, 160] {
             let thumb_path = self.derive_thumb_path(&cid, size)?;
             if thumb_path.exists() {

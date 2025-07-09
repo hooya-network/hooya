@@ -3,7 +3,7 @@ use sqlx::{
     sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool,
 };
 
-use crate::proto::{file::ExtFile, File, ProcessingStatus, Tag};
+use crate::proto::{file::ExtFile, File, Tag};
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub struct TagRow {
@@ -499,6 +499,7 @@ impl Db {
         page_number: u32,
         sort_order: i32,
         reverse_order: bool,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<(Vec<File>, u32)> {
         let offset = (page_number.saturating_sub(1)) * page_size;
 
@@ -523,6 +524,34 @@ impl Db {
                     where_clause
                         .push_str("(t.Namespace = ? AND t.Descriptor = ?)");
                 }
+            }
+
+            if !where_clause.is_empty() {
+                where_clause.push_str(" AND ");
+            }
+
+            let mut visibility_conditions = Vec::new();
+
+            if visibility_filter.includes_public() {
+                // the efficiency of this is questionable
+                visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+            }
+
+            if visibility_filter.includes_unindexed() {
+                visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+            }
+
+            if visibility_filter.includes_private() {
+                visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+            }
+
+            if visibility_conditions.is_empty() {
+                where_clause.push_str("1 = 0"); // no visibility specified
+            } else {
+                where_clause.push_str(&format!(
+                    "({})",
+                    visibility_conditions.join(" OR ")
+                ));
             }
 
             let distinct_tag_count = q.tag_query.len();
@@ -587,6 +616,26 @@ impl Db {
 
             (query, count_query)
         } else {
+            let mut visibility_conditions = Vec::new();
+
+            if visibility_filter.includes_public() {
+                visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+            }
+
+            if visibility_filter.includes_unindexed() {
+                visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+            }
+
+            if visibility_filter.includes_private() {
+                visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+            }
+
+            let visibility_where = if visibility_conditions.is_empty() {
+                "WHERE 1 = 0" // no visibility types allowed
+            } else {
+                &format!("WHERE ({})", visibility_conditions.join(" OR "))
+            };
+
             sql_query = format!(
                 r#"
                 SELECT
@@ -606,12 +655,15 @@ impl Db {
                 LEFT JOIN Images i ON f.Cid = i.Cid
                 LEFT JOIN Videos v ON f.Cid = v.Cid
                 {}
+                {}
                 LIMIT ? OFFSET ?
             "#,
-                order_clause
+                visibility_where, order_clause
             );
-            count_sql_query =
-                r#"SELECT COUNT(*) as total FROM Files f"#.to_string();
+            count_sql_query = format!(
+                r#"SELECT COUNT(*) as total FROM Files f {}"#,
+                visibility_where
+            );
 
             let query = sqlx::query(&sql_query).bind(page_size).bind(offset);
             let count_query = sqlx::query(&count_sql_query);
@@ -679,6 +731,7 @@ impl Db {
         page_number: u32,
         sort_order: i32,
         reverse_order: bool,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<(Vec<TagRowCount>, u32)> {
         let offset = (page_number.saturating_sub(1)) * page_size;
 
@@ -704,6 +757,26 @@ impl Db {
             1
         };
 
+        let mut visibility_conditions = Vec::new();
+
+        if visibility_filter.includes_public() {
+            visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+        }
+
+        if visibility_filter.includes_unindexed() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+        }
+
+        if visibility_filter.includes_private() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+        }
+
+        let visibility_where = if visibility_conditions.is_empty() {
+            "WHERE 1 = 0" // no visibility types allowed
+        } else {
+            &format!("WHERE ({})", visibility_conditions.join(" OR "))
+        };
+
         let query = format!(
             r#"
                 SELECT
@@ -714,11 +787,12 @@ impl Db {
                 FROM Tags t
                 INNER JOIN TagMap tm ON t.Id = tm.TagId
                 INNER JOIN Files f ON f.Cid = tm.FileCid
+                {}
                 GROUP BY t.Id
                 {}
                 LIMIT ? OFFSET ?
             "#,
-            order_clause
+            visibility_where, order_clause
         );
 
         let prepared_statement = sqlx::query(&query)
@@ -778,28 +852,58 @@ impl Db {
         Ok(thumbnails)
     }
 
-    pub async fn get_most_popular_tags(&self) -> Result<Vec<TagRowCount>> {
-        let ret = sqlx::query(r#"
+    pub async fn get_most_popular_tags(
+        &self,
+        visibility_filter: crate::visibility::VisibilityFilter,
+    ) -> Result<Vec<TagRowCount>> {
+        let mut visibility_conditions = Vec::new();
+
+        if visibility_filter.includes_public() {
+            visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+        }
+
+        if visibility_filter.includes_unindexed() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+        }
+
+        if visibility_filter.includes_private() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+        }
+
+        let visibility_where = if visibility_conditions.is_empty() {
+            "WHERE 1 = 0" // no visibility types allowed
+        } else {
+            &format!("WHERE ({})", visibility_conditions.join(" OR "))
+        };
+
+        let query = format!(
+            r#"
             SELECT Id, Namespace, Descriptor, COUNT(*) AS Associations FROM Tags t
             INNER JOIN TagMap tm ON t.Id = tm.TagId
+            INNER JOIN Files f ON tm.FileCid = f.Cid
+            {}
             GROUP BY t.Id
             ORDER BY Associations DESC
             LIMIT 10
-            "#)
-        .try_map(|r: SqliteRow| {
-            let count = r.try_get("Associations")?;
-            let descriptor = r.try_get("Descriptor")?;
-            let namespace = r.try_get("Namespace")?;
-            let id = r.try_get("Id")?;
-            Ok(TagRowCount {
-                id,
-                namespace,
-                descriptor,
-                count,
+            "#,
+            visibility_where
+        );
+
+        let ret = sqlx::query(&query)
+            .try_map(|r: SqliteRow| {
+                let count = r.try_get("Associations")?;
+                let descriptor = r.try_get("Descriptor")?;
+                let namespace = r.try_get("Namespace")?;
+                let id = r.try_get("Id")?;
+                Ok(TagRowCount {
+                    id,
+                    namespace,
+                    descriptor,
+                    count,
+                })
             })
-        })
-        .fetch_all(&self.executor)
-        .await?;
+            .fetch_all(&self.executor)
+            .await?;
 
         Ok(ret)
     }
@@ -808,6 +912,7 @@ impl Db {
         &self,
         tag_constraints: &[crate::proto::TagQuery],
         begins_with: &str,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<Vec<TagRowCount>> {
         let mut params_bind = Vec::new();
 
@@ -838,6 +943,27 @@ impl Db {
                 negation_clause,
             );
             where_clauses.push(subquery);
+        }
+
+        let mut visibility_conditions = Vec::new();
+
+        if visibility_filter.includes_public() {
+            visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+        }
+
+        if visibility_filter.includes_unindexed() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+        }
+
+        if visibility_filter.includes_private() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+        }
+
+        if !visibility_conditions.is_empty() {
+            where_clauses
+                .push(format!("({})", visibility_conditions.join(" OR ")));
+        } else {
+            where_clauses.push("1 = 0".to_string()); // no visibility types allowed
         }
 
         let having_clause = if !tag_constraints.is_empty() {
@@ -901,6 +1027,7 @@ impl Db {
         tag_constraints: &[crate::proto::TagQuery],
         namespace: Option<String>,
         begins_with: &str,
+        visibility_filter: crate::visibility::VisibilityFilter,
     ) -> Result<Vec<TagRowCount>> {
         let mut params_bind = Vec::new();
 
@@ -936,6 +1063,27 @@ impl Db {
                 negation_clause,
             );
             where_clauses.push(subquery);
+        }
+
+        let mut visibility_conditions = Vec::new();
+
+        if visibility_filter.includes_public() {
+            visibility_conditions.push("NOT EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility')".to_string());
+        }
+
+        if visibility_filter.includes_unindexed() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'unindexed')".to_string());
+        }
+
+        if visibility_filter.includes_private() {
+            visibility_conditions.push("EXISTS (SELECT 1 FROM TagMap tm_vis INNER JOIN Tags t_vis ON tm_vis.TagId = t_vis.Id WHERE tm_vis.FileCid = f.Cid AND t_vis.Namespace = 'visibility' AND t_vis.Descriptor = 'private')".to_string());
+        }
+
+        if !visibility_conditions.is_empty() {
+            where_clauses
+                .push(format!("({})", visibility_conditions.join(" OR ")));
+        } else {
+            where_clauses.push("1 = 0".to_string()); // no visibility types allowed
         }
 
         let having_clause = if !tag_constraints.is_empty() {
