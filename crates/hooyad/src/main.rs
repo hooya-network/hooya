@@ -7,13 +7,13 @@ use hooya::proto::{
     CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
     CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
     ForgetFileRequest, GetUploadStatusReply, GetUploadStatusRequest,
-    LocalFilePageReply, LocalFilePageRequest, ProcessingEvent,
-    ProcessingEventsRequest, ProcessingStatus, RandomLocalFileReply,
-    RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
-    SearchRequest, StartUploadSessionReply, StartUploadSessionRequest,
-    StreamToFilestoreReply, SuggestTagReply, SuggestTagRequest,
-    SystemInfoReply, SystemInfoRequest, SystemStats, TagCidReply,
-    TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
+    InstanceEventsRequest, LocalFilePageReply, LocalFilePageRequest,
+    ProcessingEvent, ProcessingEventsRequest, ProcessingStatus,
+    RandomLocalFileReply, RandomLocalFileRequest, ReimportReply,
+    ReimportRequest, SearchReply, SearchRequest, StartUploadSessionReply,
+    StartUploadSessionRequest, StreamToFilestoreReply, SuggestTagReply,
+    SuggestTagRequest, SystemInfoReply, SystemInfoRequest, SystemStats,
+    TagCidReply, TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
     UploadChunkRequest, UploadStatus, VersionInfo, VersionReply,
     VersionRequest,
 };
@@ -22,12 +22,17 @@ use rand::distributions::DistString;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Sqlite, SqlitePool};
 use std::{
-    collections::HashMap, fs::File, io::Write, path::PathBuf, pin::Pin,
-    sync::Arc, time::Instant,
+    collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, time::Instant,
 };
-use tokio::sync::Mutex;
+use tokio::{
+    fs::File,
+    io::AsyncWriteExt,
+    sync::{Mutex, Semaphore},
+};
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
+
+use futures::TryFutureExt as _;
 
 const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024; // 10MB max chunk size
 
@@ -128,17 +133,17 @@ impl Control for IControl {
         let tmp_name = rand::distributions::Alphanumeric
             .sample_string(&mut rand::thread_rng(), 16);
         let tmp_path = runtime.filestore_path.join("tmp").join(tmp_name);
-        let mut fh = File::create(tmp_path.clone())?;
+        let mut fh = tokio::fs::File::create(tmp_path.clone()).await?;
 
         while let Some(res) = chunk_stream.next().await {
             let data = &res?.data;
             // Feed chunk to SHA2-256 algorithm
             sha_context.update(data);
             // Append to on-disk file
-            fh.write_all(data)?;
+            fh.write_all(data).await?;
         }
 
-        let len = fh.metadata()?.len();
+        let len = fh.metadata().await?.len();
 
         if len == 0 {
             return Err(Status::invalid_argument("Empty file"));
@@ -152,9 +157,9 @@ impl Control for IControl {
         let parent = cid_store_path.parent().unwrap();
 
         if !parent.is_dir() {
-            std::fs::create_dir(parent)?;
+            tokio::fs::create_dir(parent).await?;
         }
-        std::fs::rename(tmp_path, cid_store_path)?;
+        tokio::fs::rename(tmp_path, cid_store_path).await?;
 
         self.runtime
             .import_from_filestore(cid.clone())
@@ -238,8 +243,9 @@ impl Control for IControl {
             .runtime
             .derive_store_path(&cid)
             .map_err(|e| Status::internal(e.to_string()))?;
-        let fh = File::open(local_file)?;
 
+        // This is fine to do without tokio::fs
+        let fh = std::fs::File::open(local_file)?;
         let chunks = hooya::ChunkedReader::new(fh);
         let stream = tokio_stream::iter(chunks).map(move |c| {
             let data = c?;
@@ -264,7 +270,7 @@ impl Control for IControl {
             .runtime
             .derive_thumb_path(&req.source_cid, req.long_edge)
             .map_err(|e| Status::internal(e.to_string()))?;
-        let fh = File::open(local_file)?;
+        let fh = std::fs::File::open(local_file)?;
 
         let chunks = hooya::ChunkedReader::new(fh);
         let stream = tokio_stream::iter(chunks).map(move |c| {
@@ -387,11 +393,20 @@ impl Control for IControl {
 
     async fn forget_file(
         &self,
-        _: Request<ForgetFileRequest>,
+        request: Request<ForgetFileRequest>,
     ) -> Result<Response<ForgetFileReply>, Status> {
-        let reply = ForgetFileReply {};
+        let req = request.into_inner();
 
-        Ok(Response::new(reply))
+        match self.runtime.forget_file(req.cid).await {
+            Ok(()) => {
+                let reply = ForgetFileReply {};
+                Ok(Response::new(reply))
+            }
+            Err(e) => {
+                eprintln!("Error forgetting file: {:?}", e);
+                Err(Status::internal(format!("Failed to forget file: {}", e)))
+            }
+        }
     }
 
     async fn cid_info(
@@ -497,9 +512,7 @@ impl Control for IControl {
         // temp file for upload sessions
         let tmp_name = format!("{}_session", upload_id);
         let tmp_path = self.runtime.filestore_path.join("tmp").join(&tmp_name);
-        let temp_file = File::create(&tmp_path).map_err(|e| {
-            Status::internal(format!("Failed to create temp file: {}", e))
-        })?;
+        let temp_file = File::create(&tmp_path).await?;
 
         let session = UploadSession {
             id: upload_id.clone(),
@@ -568,9 +581,7 @@ impl Control for IControl {
         }
 
         // write chunk data
-        session.temp_file.write_all(&req.data).map_err(|e| {
-            Status::internal(format!("failed to write chunk: {}", e))
-        })?;
+        session.temp_file.write_all(&req.data).await?;
 
         session.bytes_received += this_data_len;
         let this_chunk_number = session
@@ -616,9 +627,7 @@ impl Control for IControl {
         let tmp_name = format!("{}_session", session.id);
         let tmp_path = self.runtime.filestore_path.join("tmp").join(&tmp_name);
 
-        let file_data = std::fs::read(&tmp_path).map_err(|e| {
-            Status::internal(format!("failed to read tmp file: {}", e))
-        })?;
+        let file_data = tokio::fs::read(&tmp_path).await?;
 
         if file_data.is_empty() {
             return Err(Status::invalid_argument("empty file"));
@@ -636,16 +645,13 @@ impl Control for IControl {
             .derive_store_path(&cid)
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        let tmp_path = tmp_path.clone();
+        let cid_store_path = cid_store_path.clone();
         let parent = cid_store_path.parent().unwrap();
         if !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Status::internal(format!("failed to create directory: {}", e))
-            })?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-
-        std::fs::rename(&tmp_path, &cid_store_path).map_err(|e| {
-            Status::internal(format!("failed to move file: {}", e))
-        })?;
+        tokio::fs::rename(&tmp_path, &cid_store_path).await?;
 
         // import once uploaded
         let file = self
@@ -775,6 +781,50 @@ impl Control for IControl {
 
         Ok(Response::new(Box::pin(stream)))
     }
+
+    type InstanceEventsStream =
+        Pin<Box<dyn Stream<Item = Result<ProcessingEvent, Status>> + Send>>;
+
+    async fn instance_events(
+        &self,
+        _request: Request<InstanceEventsRequest>,
+    ) -> Result<Response<Self::InstanceEventsStream>, Status> {
+        let rx = self.runtime.processing_events.subscribe();
+
+        use tokio_stream::wrappers::BroadcastStream;
+        let stream = BroadcastStream::new(rx)
+            .filter_map(move |result| {
+                match result {
+                    Ok(event) => {
+                        let proto_event = ProcessingEvent {
+                            cid: event.cid.clone(),
+                            event_type: match &event.event_type {
+                                hooya::runtime::ProcessingEventType::Started => ProcessingStatus::ProcessingStarted as i32,
+                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { .. } => ProcessingStatus::ThumbnailGenerated as i32,
+                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { .. } => ProcessingStatus::VideoPreviewGenerated as i32,
+                                hooya::runtime::ProcessingEventType::Finished => ProcessingStatus::ProcessingFinished as i32,
+                                hooya::runtime::ProcessingEventType::Failed => ProcessingStatus::ProcessingFailed as i32,
+                            },
+                            error_message: event.error_message.clone(),
+                            long_edge: match &event.event_type {
+                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { long_edge, .. } => Some(*long_edge),
+                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { long_edge, .. } => Some(*long_edge),
+                                _ => None,
+                            },
+                            mimetype: match &event.event_type {
+                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                _ => None,
+                            },
+                        };
+                        Some(Ok(proto_event))
+                    }
+                    Err(_) => None
+                }
+            });
+
+        Ok(Response::new(Box::pin(stream)))
+    }
 }
 
 #[tokio::main]
@@ -827,6 +877,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (processing_events, _) = tokio::sync::broadcast::channel(1000);
 
+    // create semaphore for CPU-bound tasks
+    let cpu_semaphore = Semaphore::new(num_cpus::get());
+
     // initialize BLS keys for node identity
     let (node_keypair, consensus_keypair) =
         hooya::keys::initialize_keys(&filestore_path)?;
@@ -849,6 +902,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 node_keypair,
                 consensus_keypair,
                 config,
+                cpu_semaphore,
             }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))

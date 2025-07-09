@@ -2,32 +2,22 @@ use std::io::{BufReader, Read, Seek};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use exif::Exif;
 use image::io::Reader as ImageReader;
 use image::{DynamicImage, ImageFormat};
 
 pub fn thumbnail(
     in_image: &DynamicImage,
-    exif_data: Option<&Exif>,
+    orientation: Option<u32>,
     out_file: &PathBuf,
     long_edge: u32,
 ) -> Result<(u32, u32)> {
     let thumb = in_image.thumbnail(long_edge, long_edge);
-    let transformed = match exif_data {
-        Some(exif_data) => match exif_data
-            .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-        {
-            Some(orientation) => match orientation.value.get_uint(0) {
-                // There are more but these are most common
-                Some(1) => thumb,
-                Some(3) => thumb.rotate180(),
-                Some(6) => thumb.rotate90(),
-                Some(8) => thumb.rotate270(),
-                _ => thumb,
-            },
-            None => thumb,
-        },
-        None => thumb,
+    let transformed = match orientation {
+        Some(1) => thumb,
+        Some(3) => thumb.rotate180(),
+        Some(6) => thumb.rotate90(),
+        Some(8) => thumb.rotate270(),
+        _ => thumb,
     }
     .into_rgba8();
 

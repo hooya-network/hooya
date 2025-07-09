@@ -1036,4 +1036,12 @@ impl Db {
             .await?;
         Ok(row.get("count"))
     }
+
+    pub async fn delete_file(&self, cid: Vec<u8>) -> Result<()> {
+        sqlx::query("DELETE FROM Files WHERE Cid = ?")
+            .bind(cid)
+            .execute(&self.executor)
+            .await?;
+        Ok(())
+    }
 }

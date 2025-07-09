@@ -1625,6 +1625,7 @@ dependencies = [
  "futures-util",
  "hooya",
  "hooya-config",
+ "num_cpus",
  "prost",
  "rand",
  "semver",

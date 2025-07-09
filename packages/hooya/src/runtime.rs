@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sylow::KeyPair;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, RwLock, Semaphore};
 
 pub struct Runtime {
     pub filestore_path: PathBuf,
@@ -20,6 +20,7 @@ pub struct Runtime {
     pub node_keypair: KeyPair,
     pub consensus_keypair: Option<KeyPair>,
     pub config: HooyaConfig,
+    pub cpu_semaphore: Semaphore,
 }
 
 #[derive(Clone, Debug)]
@@ -537,6 +538,7 @@ impl Runtime {
         mimetype: &str,
     ) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
+
         let video_metadata =
             crate::video::extract_video_metadata(&cid_store_path)?;
         let video_width = video_metadata.width;
@@ -573,23 +575,41 @@ impl Runtime {
                 std::fs::create_dir_all(parent)?;
             }
 
-            let (preview_height, preview_width) = crate::video::preview(
-                &cid_store_path,
-                &thumb_store_path,
-                t_size_long_edge,
-            )?;
+            let (preview_height, preview_width) = {
+                let _permit = self.cpu_semaphore.acquire().await?;
+                tokio::task::spawn_blocking({
+                    let cid_store_path = cid_store_path.clone();
+                    let thumb_store_path = thumb_store_path.clone();
+                    move || {
+                        crate::video::preview(
+                            &cid_store_path,
+                            &thumb_store_path,
+                            t_size_long_edge,
+                        )
+                    }
+                })
+                .await??
+            };
 
-            let fh = std::fs::File::open(thumb_store_path)?;
-            let size = fh.metadata()?.len().try_into().unwrap(); // TODO
+            let (thumb_cid, size) = tokio::task::spawn_blocking({
+                let thumb_store_path = thumb_store_path.clone();
+                move || -> Result<(Vec<u8>, i64)> {
+                    let fh = std::fs::File::open(thumb_store_path)?;
+                    let size = fh.metadata()?.len().try_into().unwrap(); // TODO
 
-            let chunks = crate::ChunkedReader::new(fh);
-            let mut sha_context = crate::cid::new_digest_context();
+                    let chunks = crate::ChunkedReader::new(fh);
+                    let mut sha_context = crate::cid::new_digest_context();
 
-            for c in chunks {
-                sha_context.update(&c?);
-            }
+                    for c in chunks {
+                        sha_context.update(&c?);
+                    }
 
-            let thumb_cid = crate::cid::wrap_digest(sha_context.finish())?;
+                    let thumb_cid =
+                        crate::cid::wrap_digest(sha_context.finish())?;
+                    Ok((thumb_cid, size))
+                }
+            })
+            .await??;
 
             self.db
                 .new_thumbnail(ThumbnailRow {
@@ -623,8 +643,16 @@ impl Runtime {
         mimetype: &str,
     ) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
+
         let (decoded_image, exif_data) =
             crate::image::read(&cid_store_path, mimetype)?;
+
+        // extract orientation information from exif data once
+        let orientation = exif_data.as_ref().and_then(|exif| {
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|orientation| orientation.value.get_uint(0))
+        });
+
         let img_width = decoded_image.width();
         let img_height = decoded_image.height();
 
@@ -659,24 +687,43 @@ impl Runtime {
                 std::fs::create_dir_all(parent)?;
             }
 
-            let (thumb_height, thumb_width) = crate::image::thumbnail(
-                &decoded_image,
-                exif_data.as_ref(),
-                &thumb_store_path,
-                t_size_long_edge,
-            )?;
+            let (thumb_height, thumb_width) = {
+                let _permit = self.cpu_semaphore.acquire().await?;
+                tokio::task::spawn_blocking({
+                    let decoded_image = decoded_image.clone();
+                    let thumb_store_path = thumb_store_path.clone();
+                    let orientation = orientation;
+                    move || {
+                        crate::image::thumbnail(
+                            &decoded_image,
+                            orientation,
+                            &thumb_store_path,
+                            t_size_long_edge,
+                        )
+                    }
+                })
+                .await??
+            };
 
-            let fh = std::fs::File::open(thumb_store_path)?;
-            let size = fh.metadata()?.len().try_into().unwrap(); // TODO
+            let (thumb_cid, size) = tokio::task::spawn_blocking({
+                let thumb_store_path = thumb_store_path.clone();
+                move || -> Result<(Vec<u8>, i64)> {
+                    let fh = std::fs::File::open(thumb_store_path)?;
+                    let size = fh.metadata()?.len().try_into().unwrap(); // TODO
 
-            let chunks = crate::ChunkedReader::new(fh);
-            let mut sha_context = crate::cid::new_digest_context();
+                    let chunks = crate::ChunkedReader::new(fh);
+                    let mut sha_context = crate::cid::new_digest_context();
 
-            for c in chunks {
-                sha_context.update(&c?);
-            }
+                    for c in chunks {
+                        sha_context.update(&c?);
+                    }
 
-            let thumb_cid = crate::cid::wrap_digest(sha_context.finish())?;
+                    let thumb_cid =
+                        crate::cid::wrap_digest(sha_context.finish())?;
+                    Ok((thumb_cid, size))
+                }
+            })
+            .await??;
 
             self.db
                 .new_thumbnail(ThumbnailRow {
@@ -797,5 +844,57 @@ impl Runtime {
     /// Get the operator name from configuration
     pub fn operator_name(&self) -> &str {
         &self.config.instance.operator
+    }
+
+    pub fn derive_forgotten_path(&self, cid: &[u8]) -> Result<PathBuf> {
+        let encoded_cid = crate::cid::encode(cid);
+
+        if encoded_cid.is_empty() {
+            return Err(anyhow::anyhow!("Unable to derive path for empty CID"));
+        }
+
+        let prefix = if encoded_cid.len() >= 11 {
+            &encoded_cid[..11]
+        } else {
+            &encoded_cid
+        };
+
+        let final_dir = self.filestore_path.join("forgotten").join(prefix);
+        Ok(final_dir.join(encoded_cid))
+    }
+
+    pub async fn forget_file(&self, cid: Vec<u8>) -> Result<()> {
+        // get current file path
+        let current_path = self.derive_store_path(&cid)?;
+
+        // check if file exists
+        if !current_path.exists() {
+            return Err(anyhow::anyhow!("File does not exist"));
+        }
+
+        // derive forgotten path
+        let forgotten_path = self.derive_forgotten_path(&cid)?;
+
+        // ensure forgotten directory exists
+        if let Some(parent) = forgotten_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // move file to forgotten directory
+        std::fs::rename(&current_path, &forgotten_path)?;
+
+        // clean up thumbnails from filesystem
+        let encoded_cid = crate::cid::encode(&cid);
+        for size in [1280, 640, 320, 160] {
+            let thumb_path = self.derive_thumb_path(&cid, size)?;
+            if thumb_path.exists() {
+                let _ = std::fs::remove_file(thumb_path);
+            }
+        }
+
+        // delete from database (cascades to all related tables)
+        self.db.delete_file(cid).await?;
+
+        Ok(())
     }
 }

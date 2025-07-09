@@ -16,15 +16,15 @@ use futures_util::{StreamExt, TryStreamExt};
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
     CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
-    ContentAtCidRequest, GetUploadStatusRequest, LocalFilePageRequest,
-    ProcessingEventsRequest, SearchQuery, SearchRequest,
-    StartUploadSessionRequest, SuggestTagRequest, SystemInfoRequest, Tag,
-    TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
+    ContentAtCidRequest, ForgetFileRequest, GetUploadStatusRequest,
+    InstanceEventsRequest, LocalFilePageRequest, ProcessingEventsRequest,
+    SearchQuery, SearchRequest, StartUploadSessionRequest, SuggestTagRequest,
+    SystemInfoRequest, Tag, TagQuery, TagsRequest, Thumbnail,
+    UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
 };
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tonic::transport::Channel;
@@ -169,6 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/cid-thumbnail/:cid/:long_edge", get(cid_thumbnail))
         .route("/cid-tags/:cid", get(cid_tags))
         .route("/cid-info/:cid", get(cid_info))
+        .route("/forget-file/:cid", delete(forget_file))
         .route("/local-file-page/:page_token", get(local_file_page))
         .route("/all-files/:page_token", get(all_files))
         .route("/all-tags/:page_token", get(all_tags))
@@ -183,6 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
         .route("/api/events/processing/:cid", get(processing_events))
+        .route("/api/events/instance", get(instance_events))
         .route("/api/system-info", get(system_info))
         .layer(cors_layer)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
@@ -486,6 +488,27 @@ async fn untag_cid(
     }
 }
 
+async fn forget_file(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Path(encoded_cid): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let cid = match decode_cid_param(&encoded_cid) {
+        Ok(cid) => cid,
+        Err(e) => return e.into_response(),
+    };
+
+    match state.client.forget_file(ForgetFileRequest { cid }).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to forget file")
+            .into_response(),
+    }
+}
+
 async fn cid_content(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
@@ -698,8 +721,6 @@ fn mimetype_extension(mimetype: &str) -> Option<String> {
         _ => None,
     }
 }
-
-// helper functions for common api patterns
 
 fn decode_cid_param(encoded_cid: &str) -> Result<Vec<u8>, impl IntoResponse> {
     match hooya::cid::decode(encoded_cid) {
@@ -1287,6 +1308,65 @@ async fn processing_events(
                             )
                         }
                         _ => "{}".to_string()
+                    };
+
+                    let sse_event = Event::default()
+                        .event(event_name)
+                        .data(event_data);
+                    yield Ok(sse_event);
+                }
+                Err(e) => {
+                    yield Err(anyhow::anyhow!("grpc error: {}", e));
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(sse_stream).into_response()
+}
+
+/// Streams instance events (mainly just files and thumbnails now)
+async fn instance_events(State(state): State<AState>) -> impl IntoResponse {
+    // start grpc stream for all instance events
+    let request = InstanceEventsRequest {};
+
+    let mut stream = match state.client.clone().instance_events(request).await {
+        Ok(response) => response.into_inner(),
+        Err(_) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start instance events stream",
+            )
+                .into_response()
+        }
+    };
+
+    // convert grpc stream to sse stream
+    let sse_stream = async_stream::stream! {
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    let event_name = match event.event_type {
+                        0 => "processing_finished",      // ProcessingStatus::ProcessingFinished = 0
+                        1 => "processing_started",       // ProcessingStatus::ProcessingStarted = 1
+                        2 => "processing_failed",        // ProcessingStatus::ProcessingFailed = 2
+                        3 => "thumbnail_generated",      // ProcessingStatus::ThumbnailGenerated = 3
+                        4 => "video_preview_generated",  // ProcessingStatus::VideoPreviewGenerated = 4
+                        _ => "unknown",
+                    };
+
+                    // include cid and metadata for all events
+                    let cid_str = hooya::cid::encode(&event.cid);
+                    let event_data = match event.event_type {
+                        3 | 4 => { // thumbnail_generated or video_preview_generated
+                            format!("{{\"cid\":\"{}\",\"long_edge\":{},\"mimetype\":\"{}\"}}",
+                                cid_str,
+                                event.long_edge.unwrap_or(0),
+                                event.mimetype.as_deref().unwrap_or("")
+                            )
+                        }
+                        _ => format!("{{\"cid\":\"{}\"}}", cid_str)
                     };
 
                     let sse_event = Event::default()
