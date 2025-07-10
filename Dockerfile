@@ -1,4 +1,4 @@
-FROM rust:1.78.0-alpine as builder
+FROM rust:1.88.0-alpine as builder
 RUN apk add openssl-dev musl-dev protoc
 WORKDIR /wd
 COPY . /wd

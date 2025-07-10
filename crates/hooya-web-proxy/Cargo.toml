@@ -1,6 +1,6 @@
 [package]
 name = "hooya-web-proxy"
-version = "0.1.0-alpha-5"
+version = "0.1.0"
 edition = "2021"
 authors = ["wesl-ee <w@wesl.ee>"]
 
