@@ -234,7 +234,8 @@ impl Control for IControl {
         &self,
         r: Request<ContentAtCidRequest>,
     ) -> Result<Response<Self::ContentAtCidStream>, Status> {
-        let cid = r.into_inner().cid;
+        let req = r.into_inner();
+        let cid = req.cid;
 
         // NOTE this is safe because we are in charge of encoding the binary
         // data and the set of characters in base32 cannot be used for
@@ -246,7 +247,15 @@ impl Control for IControl {
 
         // This is fine to do without tokio::fs
         let fh = std::fs::File::open(local_file)?;
-        let chunks = hooya::ChunkedReader::new(fh);
+
+        let chunks = if let (Some(start), end) = (req.start_byte, req.end_byte)
+        {
+            hooya::ChunkedReader::new_with_range(fh, start, end)
+                .map_err(|e| Status::internal(e.to_string()))?
+        } else {
+            hooya::ChunkedReader::new(fh)
+        };
+
         let stream = tokio_stream::iter(chunks).map(move |c| {
             let data = c?;
             Ok(FileChunk { data })

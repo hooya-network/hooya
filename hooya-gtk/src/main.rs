@@ -164,7 +164,11 @@ async fn request_data_at_cid(
     cid: Vec<u8>,
 ) -> impl Stream<Item = IncomingImage> {
     let resp_res = client
-        .content_at_cid(ContentAtCidRequest { cid: cid.clone() })
+        .content_at_cid(ContentAtCidRequest {
+            cid: cid.clone(),
+            start_byte: None,
+            end_byte: None,
+        })
         .await;
     let inner_resp = resp_res.unwrap().into_inner();
 

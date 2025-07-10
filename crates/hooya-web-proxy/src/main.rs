@@ -644,6 +644,55 @@ async fn forget_file(
     }
 }
 
+#[derive(Debug)]
+struct ByteRange {
+    start: u64,
+    end: Option<u64>,
+}
+
+fn parse_range_header(range_header: &str, file_size: u64) -> Option<ByteRange> {
+    if !range_header.starts_with("bytes=") {
+        return None;
+    }
+
+    let range_spec = &range_header[6..];
+    let parts: Vec<&str> = range_spec.split('-').collect();
+
+    if parts.len() != 2 {
+        return None;
+    }
+
+    match (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
+        (Ok(start), Ok(end)) => {
+            let end = std::cmp::min(end, file_size.saturating_sub(1));
+            if start <= end {
+                Some(ByteRange {
+                    start,
+                    end: Some(end),
+                })
+            } else {
+                None
+            }
+        }
+        (Ok(start), Err(_)) => {
+            if start < file_size {
+                Some(ByteRange { start, end: None })
+            } else {
+                None
+            }
+        }
+        (Err(_), Ok(suffix)) => {
+            if suffix > 0 && suffix <= file_size {
+                let start = file_size.saturating_sub(suffix);
+                Some(ByteRange { start, end: None })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 async fn cid_content(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
@@ -660,8 +709,31 @@ async fn cid_content(
     if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
         return e;
     }
+
+    // get file info first to check size for range requests
+    let file_info = client
+        .cid_info(CidInfoRequest { cid: cid.clone() })
+        .await
+        .unwrap()
+        .into_inner()
+        .file
+        .unwrap();
+
+    // check for range header
+    let range_request = headers
+        .get("range")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| parse_range_header(h, file_info.size as u64));
+
+    // build request with optional range
+    let content_request = ContentAtCidRequest {
+        cid: cid.clone(),
+        start_byte: range_request.as_ref().map(|r| r.start),
+        end_byte: range_request.as_ref().and_then(|r| r.end),
+    };
+
     let chunk_stream = client
-        .content_at_cid(ContentAtCidRequest { cid: cid.clone() })
+        .content_at_cid(content_request)
         .await
         .unwrap()
         .into_inner()
@@ -669,29 +741,60 @@ async fn cid_content(
         .and_then(|f| futures::future::ok(FileChunk(f)));
     let body = axum::body::Body::from_stream(chunk_stream);
 
-    let file_info = client
-        .cid_info(CidInfoRequest { cid })
-        .await
-        .unwrap()
-        .into_inner()
-        .file
-        .unwrap();
-
-    let mut headers = HeaderMap::new();
-    headers.append(
+    let mut response_headers = HeaderMap::new();
+    response_headers.append(
         axum::http::header::CACHE_CONTROL,
         "max-age=31536000, immutable".parse().unwrap(),
     );
-    headers.append(axum::http::header::CONTENT_LENGTH, file_info.size.into());
+
+    // always advertise range support
+    response_headers
+        .append(axum::http::header::ACCEPT_RANGES, "bytes".parse().unwrap());
+
+    let status_code = if let Some(range) = &range_request {
+        // partial content response
+        let content_length = match range.end {
+            Some(end) => end.saturating_sub(range.start).saturating_add(1),
+            None => (file_info.size as u64).saturating_sub(range.start),
+        };
+
+        response_headers.append(
+            axum::http::header::CONTENT_LENGTH,
+            content_length.to_string().parse().unwrap(),
+        );
+
+        let content_range = match range.end {
+            Some(end) => {
+                format!("bytes {}-{}/{}", range.start, end, file_info.size)
+            }
+            None => format!(
+                "bytes {}-{}/{}",
+                range.start,
+                file_info.size.saturating_sub(1),
+                file_info.size
+            ),
+        };
+        response_headers.append(
+            axum::http::header::CONTENT_RANGE,
+            content_range.parse().unwrap(),
+        );
+
+        axum::http::StatusCode::PARTIAL_CONTENT
+    } else {
+        // full content response
+        response_headers
+            .append(axum::http::header::CONTENT_LENGTH, file_info.size.into());
+        axum::http::StatusCode::OK
+    };
 
     if let Some(mtype) = file_info.mimetype {
         let save_extension = mimetype_extension(&mtype);
 
-        headers
+        response_headers
             .append(axum::http::header::CONTENT_TYPE, mtype.parse().unwrap());
 
         if let Some(save_extension) = save_extension {
-            headers.append(
+            response_headers.append(
                 axum::http::header::CONTENT_DISPOSITION,
                 format!(
                     "inline; filename=\"{}.{}\"",
@@ -703,7 +806,7 @@ async fn cid_content(
         }
     }
 
-    (headers, body).into_response()
+    (status_code, response_headers, body).into_response()
 }
 
 async fn cid_thumbnail_medium(

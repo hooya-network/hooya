@@ -207,7 +207,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let encoded_cid = sub_matches.get_one::<String>("cid").unwrap();
             let (_, cid) = hooya::cid::decode(encoded_cid)?;
             let mut chunk_stream = client
-                .content_at_cid(ContentAtCidRequest { cid })
+                .content_at_cid(ContentAtCidRequest {
+                    cid,
+                    start_byte: None,
+                    end_byte: None,
+                })
                 .await?
                 .into_inner();
 
