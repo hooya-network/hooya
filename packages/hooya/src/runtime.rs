@@ -677,8 +677,13 @@ impl Runtime {
                 .and_then(|orientation| orientation.value.get_uint(0))
         });
 
-        let img_width = decoded_image.width();
-        let img_height = decoded_image.height();
+        let (img_width, img_height) = if orientation == Some(6) || orientation == Some(8) {
+            // flipped 90 or 270
+            (decoded_image.height(), decoded_image.width())
+        } else {
+            // not flipped
+            (decoded_image.width(), decoded_image.height())
+        };
 
         self.db
             .new_image(ImageRow {
