@@ -273,7 +273,10 @@ async fn login(
                 ) {
                     Ok(access_token) => {
                         // issue new access token
-                        let cookie_header = format!("jwt={}; HttpOnly; Secure; SameSite=Lax; Max-Age=900", access_token);
+                        let cookie_header = format!(
+                            "jwt={}; HttpOnly; SameSite=Lax; Max-Age=900",
+                            access_token
+                        );
                         let mut response =
                             StatusCode::NO_CONTENT.into_response();
                         response.headers_mut().insert(
