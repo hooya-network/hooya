@@ -2,15 +2,22 @@ pub mod proto {
     tonic::include_proto!("hooya");
 }
 
+pub mod mesh {
+    tonic::include_proto!("hooya.mesh");
+}
+
 mod chunked_reader;
 
 pub use chunked_reader::*;
 
+pub mod chat_handler;
+pub mod chatroom;
 pub mod cid;
 pub mod client;
 pub mod image;
 pub mod keys;
 pub mod local;
+pub mod mesh_network;
 pub mod runtime;
 pub mod video;
 pub mod visibility;

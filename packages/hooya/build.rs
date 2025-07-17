@@ -37,6 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(serde::Deserialize, serde::Serialize)]",
         )
         .enum_attribute("ext_file", "#[serde(untagged)]")
-        .compile(&["hooya.proto", "control.proto"], &["../../proto"])?;
+        .compile(
+            &["hooya.proto", "control.proto", "mesh.proto"],
+            &["../../proto"],
+        )?;
     Ok(())
 }

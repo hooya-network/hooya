@@ -2,7 +2,7 @@ use std::io::{BufReader, Read, Seek};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use image::io::Reader as ImageReader;
+use image::ImageReader;
 use image::{DynamicImage, ImageFormat};
 
 pub fn thumbnail(

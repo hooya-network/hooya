@@ -3,19 +3,21 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, CidInfoReply,
-    CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
-    CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
-    ForgetFileRequest, GetUploadStatusReply, GetUploadStatusRequest,
-    InstanceEventsRequest, LocalFilePageReply, LocalFilePageRequest,
-    ProcessingEvent, ProcessingEventsRequest, ProcessingStatus,
-    RandomLocalFileReply, RandomLocalFileRequest, ReimportReply,
-    ReimportRequest, SearchReply, SearchRequest, StartUploadSessionReply,
-    StartUploadSessionRequest, StreamToFilestoreReply, SuggestTagReply,
-    SuggestTagRequest, SystemInfoReply, SystemInfoRequest, SystemStats,
-    TagCidReply, TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
-    UploadChunkRequest, UploadStatus, VersionInfo, VersionReply,
-    VersionRequest,
+    AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, ChatEvent,
+    ChatEventsRequest, CidInfoReply, CidInfoRequest, CidThumbnailRequest,
+    CompleteUploadReply, CompleteUploadRequest, ContentAtCidRequest, FileChunk,
+    ForgetFileReply, ForgetFileRequest, GetChatChannelsReply,
+    GetChatChannelsRequest, GetChatHistoryReply, GetChatHistoryRequest,
+    GetUploadStatusReply, GetUploadStatusRequest, InstanceEventsRequest,
+    LocalFilePageReply, LocalFilePageRequest, ProcessingEvent,
+    ProcessingEventsRequest, ProcessingStatus, RandomLocalFileReply,
+    RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
+    SearchRequest, SendChatMessageReply, SendChatMessageRequest,
+    StartUploadSessionReply, StartUploadSessionRequest, StreamToFilestoreReply,
+    SuggestTagReply, SuggestTagRequest, SystemInfoReply, SystemInfoRequest,
+    SystemStats, TagCidReply, TagCidRequest, TagsReply, TagsRequest,
+    UploadChunkReply, UploadChunkRequest, UploadStatus, VersionInfo,
+    VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -32,9 +34,7 @@ use tokio::{
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
 
-use futures::TryFutureExt as _;
-
-const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024; // 10MB max chunk size
+const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024;
 
 struct UploadSession {
     id: String,
@@ -858,6 +858,127 @@ impl Control for IControl {
 
         Ok(Response::new(Box::pin(stream)))
     }
+
+    async fn send_chat_message(
+        &self,
+        request: Request<SendChatMessageRequest>,
+    ) -> Result<Response<SendChatMessageReply>, Status> {
+        let req = request.into_inner();
+
+        if !req
+            .channel
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            || req.channel.len() > 64
+        {
+            return Err(Status::invalid_argument("Invalid channel name"));
+        }
+
+        if req.content.is_empty() || req.content.len() > 1000 {
+            return Err(Status::invalid_argument("Invalid message content"));
+        }
+
+        // sign the message
+        let message_to_sign = format!("{}:{}", req.channel, req.content);
+        let signature = hooya::keys::sign_message(
+            &self.runtime.node_keypair,
+            message_to_sign.as_bytes(),
+        );
+
+        let outgoing_msg = hooya::mesh_network::OutgoingMessage::Chat {
+            channel: req.channel.clone(),
+            content: req.content.clone(),
+            signature,
+        };
+
+        if let Err(e) = self.runtime.send_outgoing_message(outgoing_msg).await {
+            return Err(Status::internal(format!(
+                "Failed to send message: {}",
+                e
+            )));
+        }
+
+        let message_id = rand::distributions::Alphanumeric
+            .sample_string(&mut rand::thread_rng(), 16);
+
+        let reply = SendChatMessageReply { message_id };
+        Ok(Response::new(reply))
+    }
+
+    async fn get_chat_history(
+        &self,
+        request: Request<GetChatHistoryRequest>,
+    ) -> Result<Response<GetChatHistoryReply>, Status> {
+        let req = request.into_inner();
+
+        if !req
+            .channel
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            || req.channel.len() > 64
+        {
+            return Err(Status::invalid_argument("Invalid channel name"));
+        }
+
+        match self
+            .runtime
+            .get_chat_history(&req.channel, &req.page_token, req.page_size)
+            .await
+        {
+            Ok((messages, next_page_token)) => {
+                let reply = GetChatHistoryReply {
+                    messages,
+                    next_page_token,
+                };
+                Ok(Response::new(reply))
+            }
+            Err(e) => Err(Status::internal(format!(
+                "Failed to get chat history: {}",
+                e
+            ))),
+        }
+    }
+
+    async fn get_chat_channels(
+        &self,
+        _request: Request<GetChatChannelsRequest>,
+    ) -> Result<Response<GetChatChannelsReply>, Status> {
+        match self.runtime.get_chat_channels().await {
+            Ok(channels) => {
+                let reply = GetChatChannelsReply { channels };
+                Ok(Response::new(reply))
+            }
+            Err(e) => Err(Status::internal(format!(
+                "Failed to get chat channels: {}",
+                e
+            ))),
+        }
+    }
+
+    type ChatEventsStream =
+        Pin<Box<dyn Stream<Item = Result<ChatEvent, Status>> + Send>>;
+    async fn chat_events(
+        &self,
+        _request: Request<ChatEventsRequest>,
+    ) -> Result<Response<Self::ChatEventsStream>, Status> {
+        let rx = self.runtime.chat_events.subscribe();
+        use tokio_stream::wrappers::BroadcastStream;
+        let stream =
+            BroadcastStream::new(rx).filter_map(move |result| match result {
+                Ok(event) => {
+                    let proto_event = ChatEvent {
+                        channel: event.channel,
+                        content: event.content,
+                        node_id: event.node_id,
+                        signature: event.signature,
+                    };
+                    Some(Ok(proto_event))
+                }
+                Err(_) => None,
+            });
+
+        Ok(Response::new(Box::pin(stream)))
+    }
 }
 
 #[tokio::main]
@@ -909,6 +1030,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (processing_events, _) = tokio::sync::broadcast::channel(1000);
+    let (chat_events, _) = tokio::sync::broadcast::channel(1000);
 
     // create semaphore for CPU-bound tasks
     let cpu_semaphore = Semaphore::new(num_cpus::get());
@@ -929,6 +1051,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 filestore_path,
                 db,
                 processing_events,
+                chat_events,
                 processing_cids: std::sync::Arc::new(tokio::sync::RwLock::new(
                     std::collections::HashSet::new(),
                 )),

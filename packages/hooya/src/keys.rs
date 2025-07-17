@@ -2,12 +2,16 @@ use multibase::Base;
 use rand::thread_rng;
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
-use std::{fs::File, io::Write as _, path::PathBuf};
+use std::{
+    fs::File,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 use sylow::{
     FieldExtensionTrait, Fp, Fr, G2Affine, G2Projective, GroupTrait, KeyPair,
 };
 
-const DEFAULT_MULTIBASE_BASE: Base = multibase::Base::Base58Btc;
+pub const DEFAULT_MULTIBASE_BASE: Base = multibase::Base::Base58Btc;
 
 /// Generate or load a BLS keypair from a file path
 pub fn secret_bls_key_at_path(file: &PathBuf) -> anyhow::Result<KeyPair> {
@@ -47,7 +51,7 @@ pub fn write_secret_bls_key_at_path(file: &PathBuf) -> anyhow::Result<KeyPair> {
 
     let mut file = File::create(file)?;
     let encoded_key =
-        multibase::encode(DEFAULT_MULTIBASE_BASE, &secret_key.to_be_bytes());
+        multibase::encode(DEFAULT_MULTIBASE_BASE, secret_key.to_be_bytes());
     file.write_all(encoded_key.as_bytes())?;
 
     let public_key = G2Projective::generator() * secret_key;
@@ -87,21 +91,42 @@ fn keypair_pubkey_raw_bytes(kp: &KeyPair) -> [u8; 128] {
     point
 }
 
-/// Convert a BLS public key to hex string
+/// Convert a BLS public key to multibase string
 pub fn keypair_pubkey_to_hex(kp: &KeyPair) -> String {
-    hex::encode(keypair_pubkey_raw_bytes(kp))
+    multibase::encode(DEFAULT_MULTIBASE_BASE, keypair_pubkey_raw_bytes(kp))
 }
 
 /// Derives a node ID from a BLS public key
 pub fn derive_node_id(kp: &KeyPair) -> String {
     let pubkey_bytes = keypair_pubkey_raw_bytes(kp);
     let mut hasher = Sha256::new();
-    hasher.update(&pubkey_bytes);
+    hasher.update(pubkey_bytes);
     let hash = hasher.finalize();
 
-    // use first 20 bytes for node ID then encode as hex
+    // use first 20 bytes for node ID then encode with multibase
     let node_id_bytes = &hash[..20];
-    format!("0x{}", hex::encode(node_id_bytes))
+    format!(
+        "0x{}",
+        multibase::encode(DEFAULT_MULTIBASE_BASE, node_id_bytes)
+    )
+}
+
+/// Sign a message using the BLS keypair
+pub fn sign_message(kp: &KeyPair, message: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(message);
+    let hash = hasher.finalize();
+
+    // Convert hash to Fr scalar for BLS signature
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&hash[..32]);
+    let scalar =
+        Fr::from_be_bytes(&bytes).unwrap_or_else(|| Fr::new(0u64.into()));
+
+    // BLS signature: scalar * secret_key
+    let signature = kp.secret_key * scalar.into();
+
+    signature.to_be_bytes().to_vec()
 }
 
 /// load and optionally initialize the node and consensus keys
@@ -109,7 +134,7 @@ pub fn derive_node_id(kp: &KeyPair) -> String {
 /// node-secret is an identifier and signing key for the node
 /// consensus-secret is an (unused) signing key used in network consensus
 pub fn initialize_keys(
-    filestore_path: &PathBuf,
+    filestore_path: &Path,
 ) -> anyhow::Result<(KeyPair, Option<KeyPair>)> {
     let node_secret_path = filestore_path.join("node-secret");
     let consensus_secret_path = filestore_path.join("consensus-secret");

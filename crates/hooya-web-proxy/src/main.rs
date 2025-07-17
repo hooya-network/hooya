@@ -15,12 +15,13 @@ use dotenv::dotenv;
 use futures_util::{StreamExt, TryStreamExt};
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
-    CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
-    ContentAtCidRequest, ForgetFileRequest, GetUploadStatusRequest,
+    ChatEventsRequest, CidInfoRequest, CidThumbnailRequest,
+    CompleteUploadRequest, ContentAtCidRequest, ForgetFileRequest,
+    GetChatChannelsRequest, GetChatHistoryRequest, GetUploadStatusRequest,
     InstanceEventsRequest, LocalFilePageRequest, ProcessingEventsRequest,
-    SearchQuery, SearchRequest, StartUploadSessionRequest, SuggestTagRequest,
-    SystemInfoRequest, Tag, TagQuery, TagsRequest, Thumbnail,
-    UploadChunkRequest,
+    SearchQuery, SearchRequest, SendChatMessageRequest,
+    StartUploadSessionRequest, SuggestTagRequest, SystemInfoRequest, Tag,
+    TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -186,6 +187,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/upload-status/:upload_id", get(upload_status))
         .route("/api/events/processing/:cid", get(processing_events))
         .route("/api/events/instance", get(instance_events))
+        .route("/api/events/chat", get(chat_events))
+        .route("/api/chat/channels", get(get_chat_channels))
+        .route(
+            "/api/chat/history/:channel/:page_token",
+            get(get_chat_history),
+        )
+        .route("/api/chat/send", post(send_chat_message))
         .route("/api/system-info", get(system_info))
         .layer(cors_layer)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
@@ -1750,6 +1758,148 @@ async fn system_info(State(state): State<AState>) -> impl IntoResponse {
     }
 }
 
+async fn send_chat_message(
+    headers: HeaderMap,
+    State(state): State<AState>,
+    Json(payload): Json<proxy_request::SendChatMessageRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let request = SendChatMessageRequest {
+        channel: payload.channel,
+        content: payload.content,
+    };
+
+    match state.client.clone().send_chat_message(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "message_id": reply.message_id
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to send chat message: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_chat_channels(
+    headers: HeaderMap,
+    State(state): State<AState>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let request = GetChatChannelsRequest {};
+
+    match state.client.clone().get_chat_channels(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "channels": reply.channels.iter().map(|ch| serde_json::json!({
+                    "name": ch.name
+                })).collect::<Vec<_>>()
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get chat channels: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_chat_history(
+    headers: HeaderMap,
+    State(state): State<AState>,
+    Path((channel, page_token)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let request = GetChatHistoryRequest {
+        channel,
+        page_token,
+        page_size: 50,
+    };
+
+    match state.client.clone().get_chat_history(request).await {
+        Ok(response) => {
+            let reply = response.into_inner();
+            Json(serde_json::json!({
+                "messages": reply.messages.iter().map(|msg| serde_json::json!({
+                    "channel": msg.channel,
+                    "content": msg.content,
+                    "node_id": msg.node_id,
+                    "signature": multibase::encode(hooya::keys::DEFAULT_MULTIBASE_BASE, &msg.signature)
+                })).collect::<Vec<_>>(),
+                "next_page_token": reply.next_page_token
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get chat history: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+async fn chat_events(
+    headers: HeaderMap,
+    State(state): State<AState>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e.into_response();
+    }
+
+    let request = ChatEventsRequest {};
+    let mut stream = match state.client.clone().chat_events(request).await {
+        Ok(response) => response.into_inner(),
+        Err(_) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to start chat events stream",
+            )
+                .into_response()
+        }
+    };
+
+    let sse_stream = async_stream::stream! {
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    let event_data = serde_json::json!({
+                        "channel": event.channel,
+                        "content": event.content,
+                        "node_id": event.node_id,
+                        "signature": multibase::encode(hooya::keys::DEFAULT_MULTIBASE_BASE, &event.signature)
+                    });
+
+                    let sse_event = Event::default()
+                        .event("chat_message")
+                        .data(event_data.to_string());
+                    yield Ok(sse_event);
+                }
+                Err(e) => {
+                    yield Err(anyhow::anyhow!("grpc error: {}", e));
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(sse_stream).into_response()
+}
+
 mod proxy_response {
     use serde::{Deserialize, Serialize};
 
@@ -1910,6 +2060,11 @@ mod proxy_request {
     pub struct Tag {
         pub namespace: String,
         pub descriptor: String,
+    }
+    #[derive(Serialize, Deserialize)]
+    pub struct SendChatMessageRequest {
+        pub channel: String,
+        pub content: String,
     }
 }
 

@@ -172,6 +172,7 @@ impl RuntimeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HooyaConfig {
     pub instance: InstanceConfig,
+    pub networking: NetworkingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,12 +181,55 @@ pub struct InstanceConfig {
     pub operator: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkingConfig {
+    pub max_peers: usize,
+    pub max_message_size_bytes: usize,
+    pub discovery: DiscoveryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    pub mdns: MdnsConfig,
+    pub dns: DnsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MdnsConfig {
+    pub enabled: bool,
+    pub service_name: String,
+    pub discovery_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsConfig {
+    pub enabled: bool,
+    pub bootstrap_domain: String,
+    pub lookup_interval_secs: u64,
+}
+
 impl Default for HooyaConfig {
     fn default() -> Self {
         Self {
             instance: InstanceConfig {
                 name: "hooya".to_string(),
                 operator: "anonymous".to_string(),
+            },
+            networking: NetworkingConfig {
+                max_peers: 50,
+                max_message_size_bytes: 1024 * 1024, // 1MB
+                discovery: DiscoveryConfig {
+                    mdns: MdnsConfig {
+                        enabled: true,
+                        service_name: "hooya-mesh".to_string(),
+                        discovery_interval_secs: 30,
+                    },
+                    dns: DnsConfig {
+                        enabled: true,
+                        bootstrap_domain: "bootstrap.hooya.org".to_string(),
+                        lookup_interval_secs: 300,
+                    },
+                },
             },
         }
     }

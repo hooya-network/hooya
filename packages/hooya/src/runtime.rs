@@ -7,15 +7,37 @@ use anyhow::Result;
 use hooya_config::HooyaConfig;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sylow::KeyPair;
 use tokio::sync::{broadcast, RwLock, Semaphore};
+
+pub fn sanitize_filestore_path(
+    filestore_path: &Path,
+    subdirectory: &str,
+    filename: &str,
+) -> Result<PathBuf> {
+    let target_dir = filestore_path.join(subdirectory);
+    let target_file = target_dir.join(filename);
+
+    if let Some(parent) = target_file.parent() {
+        if parent != target_dir {
+            return Err(anyhow::anyhow!(
+                "invalid path: directory traversal attempt"
+            ));
+        }
+    } else {
+        return Err(anyhow::anyhow!("invalid path: no parent directory"));
+    }
+
+    Ok(target_file)
+}
 
 pub struct Runtime {
     pub filestore_path: PathBuf,
     pub db: local::Db,
     pub processing_events: broadcast::Sender<ProcessingEvent>,
+    pub chat_events: broadcast::Sender<ChatEvent>,
     pub processing_cids: Arc<RwLock<HashSet<Vec<u8>>>>,
     pub node_keypair: KeyPair,
     pub consensus_keypair: Option<KeyPair>,
@@ -37,6 +59,14 @@ pub enum ProcessingEventType {
     VideoPreviewGenerated { long_edge: u32, mimetype: String },
     Finished,
     Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChatEvent {
+    pub channel: String,
+    pub content: String,
+    pub node_id: String,
+    pub signature: Vec<u8>,
 }
 
 impl Runtime {
@@ -722,7 +752,6 @@ impl Runtime {
                 tokio::task::spawn_blocking({
                     let decoded_image = decoded_image.clone();
                     let thumb_store_path = thumb_store_path.clone();
-                    let orientation = orientation;
                     move || {
                         crate::image::thumbnail(
                             &decoded_image,
@@ -863,7 +892,7 @@ impl Runtime {
     pub fn consensus_pubkey_hex(&self) -> Option<String> {
         self.consensus_keypair
             .as_ref()
-            .map(|kp| keys::keypair_pubkey_to_hex(kp))
+            .map(keys::keypair_pubkey_to_hex)
     }
 
     /// Get the instance name from configuration
@@ -925,5 +954,113 @@ impl Runtime {
         self.db.delete_file(cid).await?;
 
         Ok(())
+    }
+
+    pub async fn send_outgoing_message(
+        &self,
+        msg: crate::mesh_network::OutgoingMessage,
+    ) -> Result<()> {
+        match msg {
+            crate::mesh_network::OutgoingMessage::Chat {
+                channel,
+                content,
+                signature,
+            } => {
+                // validate channel name
+                let _log_path = self.path_within_filestore(
+                    self.filestore_path
+                        .join("chat_history")
+                        .join(format!("{channel}.log")),
+                )?;
+
+                let node_id = self.node_id();
+
+                println!(
+                    "would send signed message from {}: channel={}, content={}, signature_len={}",
+                    node_id, channel, content, signature.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn sanitize_filestore_path(
+        &self,
+        subdirectory: &str,
+        filename: &str,
+    ) -> Result<PathBuf> {
+        sanitize_filestore_path(&self.filestore_path, subdirectory, filename)
+    }
+
+    fn path_within_filestore(&self, path: PathBuf) -> Result<PathBuf> {
+        let canonical_filestore = self
+            .filestore_path
+            .canonicalize()
+            .unwrap_or_else(|_| self.filestore_path.clone());
+        let canonical_path =
+            path.canonicalize().unwrap_or_else(|_| path.clone());
+
+        if canonical_path.starts_with(&canonical_filestore) {
+            Ok(path)
+        } else {
+            Err(anyhow::anyhow!("path is outside filestore directory"))
+        }
+    }
+
+    pub async fn get_chat_history(
+        &self,
+        channel: &str,
+        page_token: &str,
+        page_size: u32,
+    ) -> Result<(Vec<crate::proto::ChatMessageInfo>, String)> {
+        let log_file = self.path_within_filestore(
+            self.filestore_path
+                .join("chat_history")
+                .join(format!("{channel}.log")),
+        )?;
+
+        if !log_file.exists() {
+            return Ok((vec![], String::new()));
+        }
+
+        let file = std::fs::File::open(&log_file)?;
+        let rev_lines = rev_lines::RevLines::new(file);
+
+        let start_line: usize = if page_token.is_empty() {
+            0
+        } else {
+            page_token.parse().unwrap_or(0)
+        };
+
+        let messages: Vec<crate::proto::ChatMessageInfo> = rev_lines
+            .skip(start_line)
+            .take(page_size as usize)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .rev()
+            .map(|line| crate::proto::ChatMessageInfo {
+                channel: channel.to_string(),
+                content: line,
+                node_id: "".to_string(),
+                signature: vec![],
+            })
+            .collect();
+
+        let next_page_token = (start_line + messages.len()).to_string();
+
+        Ok((messages, next_page_token))
+    }
+
+    pub async fn get_chat_channels(
+        &self,
+    ) -> Result<Vec<crate::proto::ChatChannelInfo>> {
+        Ok(vec![
+            crate::proto::ChatChannelInfo {
+                name: "general".to_string(),
+            },
+            crate::proto::ChatChannelInfo {
+                name: "dev".to_string(),
+            },
+        ])
     }
 }
