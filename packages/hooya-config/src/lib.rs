@@ -141,6 +141,10 @@ impl RuntimeConfig {
         self.data_dir.join("hooya.toml")
     }
 
+    pub fn addrbook_path(&self) -> PathBuf {
+        self.data_dir.join("addrbook.toml")
+    }
+
     pub fn load_hooya_config(
         &self,
     ) -> Result<HooyaConfig, Box<dyn std::error::Error>> {
@@ -169,32 +173,100 @@ impl RuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HooyaConfig {
     pub instance: InstanceConfig,
     pub networking: NetworkingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InstanceConfig {
     pub name: String,
     pub operator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkingConfig {
     pub max_peers: usize,
     pub max_message_size_bytes: usize,
+    pub listen_addresses: Vec<String>,
+    pub discv5_listen_addresses: Vec<String>,
     pub discovery: DiscoveryConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl NetworkingConfig {
+    pub fn get_discv5_addresses(
+        &self,
+    ) -> Result<
+        (
+            Option<(std::net::Ipv4Addr, u16)>,
+            Option<(std::net::Ipv6Addr, u16)>,
+        ),
+        String,
+    > {
+        if self.discv5_listen_addresses.len() > 2 {
+            return Err(format!("discv5_listen_addresses"));
+        }
+
+        let mut ipv4_config: Option<(std::net::Ipv4Addr, u16)> = None;
+        let mut ipv6_config: Option<(std::net::Ipv6Addr, u16)> = None;
+
+        for addr_str in &self.discv5_listen_addresses {
+            let multiaddr: libp2p::Multiaddr =
+                addr_str.parse().map_err(|e| {
+                    format!("Invalid multiaddr '{}': {}", addr_str, e)
+                })?;
+
+            let mut ip: Option<std::net::IpAddr> = None;
+            let mut port: Option<u16> = None;
+
+            for protocol in multiaddr.iter() {
+                match protocol {
+                    libp2p::multiaddr::Protocol::Ip4(ipv4) => {
+                        ip = Some(std::net::IpAddr::V4(ipv4))
+                    }
+                    libp2p::multiaddr::Protocol::Ip6(ipv6) => {
+                        ip = Some(std::net::IpAddr::V6(ipv6))
+                    }
+                    libp2p::multiaddr::Protocol::Udp(udp_port) => {
+                        port = Some(udp_port)
+                    }
+                    _ => {}
+                }
+            }
+
+            match (ip, port) {
+                (Some(std::net::IpAddr::V4(ipv4)), Some(p)) => {
+                    ipv4_config = Some((ipv4, p))
+                }
+                (Some(std::net::IpAddr::V6(ipv6)), Some(p)) => {
+                    ipv6_config = Some((ipv6, p))
+                }
+                _ => {
+                    return Err(format!(
+                        "Invalid discv5 address format: {}",
+                        addr_str
+                    ))
+                }
+            }
+        }
+
+        Ok((ipv4_config, ipv6_config))
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DiscoveryConfig {
     pub mdns: MdnsConfig,
     pub dns: DnsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MdnsConfig {
     pub enabled: bool,
     pub service_name: String,
@@ -202,35 +274,56 @@ pub struct MdnsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DnsConfig {
     pub enabled: bool,
     pub bootstrap_domain: String,
     pub lookup_interval_secs: u64,
 }
 
-impl Default for HooyaConfig {
+impl Default for InstanceConfig {
     fn default() -> Self {
         Self {
-            instance: InstanceConfig {
-                name: "hooya".to_string(),
-                operator: "anonymous".to_string(),
-            },
-            networking: NetworkingConfig {
-                max_peers: 50,
-                max_message_size_bytes: 1024 * 1024, // 1MB
-                discovery: DiscoveryConfig {
-                    mdns: MdnsConfig {
-                        enabled: true,
-                        service_name: "hooya-mesh".to_string(),
-                        discovery_interval_secs: 30,
-                    },
-                    dns: DnsConfig {
-                        enabled: true,
-                        bootstrap_domain: "bootstrap.hooya.org".to_string(),
-                        lookup_interval_secs: 300,
-                    },
-                },
-            },
+            name: "hooya".to_string(),
+            operator: "anonymous".to_string(),
+        }
+    }
+}
+
+impl Default for MdnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            service_name: "hooya-mesh".to_string(),
+            discovery_interval_secs: 30,
+        }
+    }
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bootstrap_domain: "bootstrap.hooya.org".to_string(),
+            lookup_interval_secs: 300,
+        }
+    }
+}
+
+impl Default for NetworkingConfig {
+    fn default() -> Self {
+        Self {
+            max_peers: 50,
+            max_message_size_bytes: 1024 * 1024, // 1MB
+            listen_addresses: vec![
+                "/ip4/0.0.0.0/tcp/8530".to_string(),
+                "/ip6/::/tcp/8530".to_string(),
+            ],
+            discv5_listen_addresses: vec![
+                "/ip4/0.0.0.0/udp/8530".to_string(),
+                "/ip6/::/udp/8530".to_string(),
+            ],
+            discovery: DiscoveryConfig::default(),
         }
     }
 }

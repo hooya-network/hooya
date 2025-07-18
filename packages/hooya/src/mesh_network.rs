@@ -1,3 +1,4 @@
+use crate::addr_book::AddrBook;
 use crate::mesh::{ChatMessage, MeshMessage};
 use anyhow::Result;
 use discv5::{Discv5, Enr, Event as Discv5Event};
@@ -5,16 +6,18 @@ use futures::StreamExt;
 use hooya_config::{DiscoveryConfig, NetworkingConfig};
 use libp2p::{
     gossipsub::{
-        Behaviour as GossipsubBehaviour, Event as GossipsubEvent, IdentTopic,
+        Behaviour as GossipsubBehavior, Event as GossipsubEvent, IdentTopic,
     },
-    identify::{self, Behaviour as IdentifyBehaviour},
-    mdns::{self, tokio::Behaviour as MdnsBehaviour},
-    ping::{self, Behaviour as PingBehaviour},
+    identify::{self, Behaviour as IdentifyBehavior},
+    mdns::{self, tokio::Behaviour as MdnsBehavior}, // lol american spelling
+    ping::{self, Behaviour as PingBehavior},
     swarm::{NetworkBehaviour, SwarmEvent},
-    Multiaddr, PeerId, Swarm,
+    Multiaddr,
+    PeerId,
+    Swarm,
 };
 use prost::Message;
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,75 +30,70 @@ pub enum OutgoingMessage {
     Chat {
         channel: String,
         content: String,
+        // TODO(wesl-ee) this should probably be on all messages
         signature: Vec<u8>,
     },
-    // Future message types can be added here
-    // FileTransfer { ... },
-    // StatusUpdate { ... },
 }
 
 /// Trait for handling different types of mesh messages
 pub trait MessageHandler: Send + Sync {
-    /// Validate a mesh message before processing
+    /// validate a mesh message before processing
     fn validate_message(&self, message: &MeshMessage) -> bool;
 
-    /// Handle a validated mesh message synchronously
-    /// Handler can use internal channels for async work
+    /// handle a validated mesh message synchronously
+    /// handler can use internal channels for async work
     fn handle_message(&self, message: MeshMessage) -> Result<()>;
 
-    /// Get topics this handler subscribes to
+    /// get topics this handler subscribes to
     fn get_subscribed_topics(&self) -> Vec<String>;
 }
 
 #[derive(NetworkBehaviour)]
-#[behaviour(out_event = "MeshBehaviourEvent")]
-pub struct MeshBehaviour {
-    pub gossipsub: GossipsubBehaviour,
-    pub identify: IdentifyBehaviour,
-    pub ping: PingBehaviour,
-    pub mdns: MdnsBehaviour,
+#[behaviour(out_event = "MeshBehaviorEvent")]
+pub struct MeshBehavior {
+    pub gossipsub: GossipsubBehavior,
+    pub identify: IdentifyBehavior,
+    pub ping: PingBehavior,
+    pub mdns: MdnsBehavior,
 }
 
 #[derive(Debug)]
-pub enum MeshBehaviourEvent {
+pub enum MeshBehaviorEvent {
     Gossipsub(GossipsubEvent),
     Identify(identify::Event),
     Ping(ping::Event),
     Mdns(mdns::Event),
 }
 
-impl From<GossipsubEvent> for MeshBehaviourEvent {
+impl From<GossipsubEvent> for MeshBehaviorEvent {
     fn from(event: GossipsubEvent) -> Self {
-        MeshBehaviourEvent::Gossipsub(event)
+        MeshBehaviorEvent::Gossipsub(event)
     }
 }
 
-impl From<identify::Event> for MeshBehaviourEvent {
+impl From<identify::Event> for MeshBehaviorEvent {
     fn from(event: identify::Event) -> Self {
-        MeshBehaviourEvent::Identify(event)
+        MeshBehaviorEvent::Identify(event)
     }
 }
 
-impl From<ping::Event> for MeshBehaviourEvent {
+impl From<ping::Event> for MeshBehaviorEvent {
     fn from(event: ping::Event) -> Self {
-        MeshBehaviourEvent::Ping(event)
+        MeshBehaviorEvent::Ping(event)
     }
 }
 
-impl From<mdns::Event> for MeshBehaviourEvent {
+impl From<mdns::Event> for MeshBehaviorEvent {
     fn from(event: mdns::Event) -> Self {
-        MeshBehaviourEvent::Mdns(event)
+        MeshBehaviorEvent::Mdns(event)
     }
 }
 
-/// Discovery manager handles both mDNS and DNS bootstrap discovery
+/// Discovery manager handles DNS bootstrap discovery
 struct DiscoveryManager {
-    mdns_enabled: bool,
     dns_enabled: bool,
-    mdns_interval: Duration,
     dns_interval: Duration,
     bootstrap_domain: String,
-    last_mdns_discovery: Option<Instant>,
     last_dns_lookup: Option<Instant>,
     dns_resolver: Option<TokioAsyncResolver>,
 }
@@ -103,14 +101,9 @@ struct DiscoveryManager {
 impl DiscoveryManager {
     fn new(config: &DiscoveryConfig) -> Self {
         Self {
-            mdns_enabled: config.mdns.enabled,
             dns_enabled: config.dns.enabled,
-            mdns_interval: Duration::from_secs(
-                config.mdns.discovery_interval_secs,
-            ),
             dns_interval: Duration::from_secs(config.dns.lookup_interval_secs),
             bootstrap_domain: config.dns.bootstrap_domain.clone(),
-            last_mdns_discovery: None,
             last_dns_lookup: None,
             dns_resolver: None,
         }
@@ -128,41 +121,21 @@ impl DiscoveryManager {
     }
 
     fn time_until_next_discovery(&self) -> Option<Duration> {
+        if !self.dns_enabled {
+            return None;
+        }
+
         let now = Instant::now();
-        let mut next_discovery = None;
+        let next_dns = match self.last_dns_lookup {
+            Some(last) => last + self.dns_interval,
+            None => now, // run immediately if never run
+        };
 
-        if self.mdns_enabled {
-            let next_mdns = match self.last_mdns_discovery {
-                Some(last) => last + self.mdns_interval,
-                None => now, // run immediately if never run
-            };
-
-            if next_mdns <= now {
-                return Some(Duration::ZERO); // ready to run now
-            }
-
-            let mdns_wait = next_mdns - now;
-            next_discovery = Some(mdns_wait);
+        if next_dns <= now {
+            Some(Duration::ZERO) // ready to run now
+        } else {
+            Some(next_dns - now)
         }
-
-        if self.dns_enabled {
-            let next_dns = match self.last_dns_lookup {
-                Some(last) => last + self.dns_interval,
-                None => now, // run immediately if never run
-            };
-
-            if next_dns <= now {
-                return Some(Duration::ZERO); // ready to run now
-            }
-
-            let dns_wait = next_dns - now;
-            next_discovery = Some(
-                next_discovery
-                    .map_or(dns_wait, |current| current.min(dns_wait)),
-            );
-        }
-
-        next_discovery
     }
 
     async fn run_discovery_cycle(
@@ -177,18 +150,9 @@ impl DiscoveryManager {
 
         let now = Instant::now();
 
-        // mDNS discovery is handled by libp2p automatically when enabled
-        if self.mdns_enabled
-            && self.last_mdns_discovery.is_none_or(|last| {
-                now.duration_since(last) >= self.mdns_interval
-            })
-        {
-            // mDNS discovery is passive through libp2p mdns behaviour
-            self.last_mdns_discovery = Some(now);
-        }
-
-        // DNS bootstrap discovery
+        // DNS bootstrap discovery - only if we have no connected peers
         if self.dns_enabled
+            && current_peer_count == 0
             && self.last_dns_lookup.is_none_or(|last| {
                 now.duration_since(last) >= self.dns_interval
             })
@@ -238,16 +202,20 @@ impl DiscoveryManager {
 
 pub struct MeshNetwork {
     node_id: String,
-    known_peers: HashSet<PeerId>,
+    addr_book: AddrBook,
     networking_config: NetworkingConfig,
     handlers: Vec<Arc<dyn MessageHandler>>,
 }
 
 impl MeshNetwork {
-    pub fn new(node_id: String, networking_config: NetworkingConfig) -> Self {
+    pub fn new(
+        node_id: String,
+        networking_config: NetworkingConfig,
+        addr_book: AddrBook,
+    ) -> Self {
         Self {
             node_id,
-            known_peers: HashSet::new(),
+            addr_book,
             networking_config,
             handlers: Vec::new(),
         }
@@ -258,10 +226,32 @@ impl MeshNetwork {
         self.handlers.push(handler);
     }
 
+    /// attempt to reconnect to previously known peers on startup
+    async fn reconnect_to_known_peers(
+        &mut self,
+        swarm: &mut Swarm<MeshBehavior>,
+    ) {
+        let dialable_peers = self.addr_book.get_dialable_peers();
+
+        for (peer_id, multiaddr) in dialable_peers {
+            if swarm.connected_peers().count()
+                >= self.networking_config.max_peers
+            {
+                break;
+            }
+
+            println!("Attempting to reconnect to known peer: {peer_id}");
+            if let Err(e) = swarm.dial(multiaddr.clone()) {
+                eprintln!("Failed to dial known peer {multiaddr}: {e}");
+                self.addr_book.record_connection_attempt(&peer_id, false);
+            }
+        }
+    }
+
     pub async fn run(
         &mut self,
         discv5: Discv5,
-        mut swarm: Swarm<MeshBehaviour>,
+        mut swarm: Swarm<MeshBehavior>,
         message_rx: mpsc::Receiver<OutgoingMessage>,
     ) -> Result<()> {
         self.setup_subscriptions(&mut swarm)?;
@@ -271,6 +261,9 @@ impl MeshNetwork {
         discovery_manager.initialize().await?;
 
         let discv5_events = self.setup_discv5_events(&discv5).await?;
+
+        // attempt to reconnect to known peers from previous sessions
+        self.reconnect_to_known_peers(&mut swarm).await;
 
         self.main_event_loop(
             swarm,
@@ -284,7 +277,7 @@ impl MeshNetwork {
 
     fn setup_subscriptions(
         &self,
-        swarm: &mut Swarm<MeshBehaviour>,
+        swarm: &mut Swarm<MeshBehavior>,
     ) -> Result<()> {
         for handler in &self.handlers {
             for topic_str in handler.get_subscribed_topics() {
@@ -307,7 +300,7 @@ impl MeshNetwork {
 
     async fn main_event_loop(
         &mut self,
-        mut swarm: Swarm<MeshBehaviour>,
+        mut swarm: Swarm<MeshBehavior>,
         discv5: Discv5,
         mut discv5_events: mpsc::Receiver<Discv5Event>,
         mut message_rx: mpsc::Receiver<OutgoingMessage>,
@@ -322,6 +315,10 @@ impl MeshNetwork {
                 // Discovery cycle
                 _ = tokio::time::sleep(discovery_timeout) => {
                     discovery_manager.run_discovery_cycle(&discv5, swarm.connected_peers().count(), self.networking_config.max_peers).await;
+                    // flush addr_book periodically
+                    if let Err(e) = self.addr_book.maybe_flush().await {
+                        eprintln!("Failed to flush addr_book: {e}");
+                    }
                 }
 
                 // Handle discv5 peer discovery
@@ -331,7 +328,29 @@ impl MeshNetwork {
 
                 // Handle libp2p swarm events
                 swarm_event = swarm.select_next_some() => {
-                    self.handle_swarm_event(swarm_event).await;
+                    match swarm_event {
+                        SwarmEvent::Behaviour(MeshBehaviorEvent::Gossipsub(gossipsub_event)) => {
+                            self.handle_gossipsub_event(gossipsub_event).await;
+                        }
+                        SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(identify_event)) => {
+                            self.handle_identify_event(identify_event).await;
+                        }
+                        SwarmEvent::Behaviour(MeshBehaviorEvent::Ping(_ping_event)) => {
+                            // handle ping events if needed
+                        }
+                        SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns_event)) => {
+                            self.handle_mdns_event(mdns_event, &mut swarm).await;
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            println!("Connected to peer: {peer_id}");
+                            self.addr_book.record_connection_attempt(&peer_id, true);
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            println!("Disconnected from peer: {peer_id}");
+                            self.addr_book.remove_peer(&peer_id);
+                        }
+                        _ => {}
+                    }
                 }
 
                 // Handle outgoing messages
@@ -345,7 +364,7 @@ impl MeshNetwork {
     async fn handle_discv5_event(
         &mut self,
         event: Discv5Event,
-        swarm: &mut Swarm<MeshBehaviour>,
+        swarm: &mut Swarm<MeshBehavior>,
         discv5: &Discv5,
     ) {
         if let Discv5Event::NodeInserted {
@@ -359,52 +378,22 @@ impl MeshNetwork {
                     let peer_id = self.enr_to_peer_id(&enr);
 
                     // only connect if we don't already know this peer
-                    if !self.known_peers.contains(&peer_id)
+                    if !self.addr_book.contains_peer(&peer_id)
                         && swarm.connected_peers().count()
                             < self.networking_config.max_peers
                     {
-                        println!("Discovered new peer via discv5: {peer_id}");
-                        self.known_peers.insert(peer_id);
+                        println!("discovered new peer via discv5: {peer_id}");
+                        self.addr_book.add_peer(peer_id, multiaddr.clone());
 
                         // attempt to dial
                         if let Err(e) = swarm.dial(multiaddr.clone()) {
                             eprintln!("Failed to dial peer {multiaddr}: {e}");
+                            self.addr_book
+                                .record_connection_attempt(&peer_id, false);
                         }
                     }
                 }
             }
-        }
-    }
-
-    async fn handle_swarm_event(
-        &mut self,
-        event: SwarmEvent<MeshBehaviourEvent>,
-    ) {
-        match event {
-            SwarmEvent::Behaviour(MeshBehaviourEvent::Gossipsub(
-                gossipsub_event,
-            )) => {
-                self.handle_gossipsub_event(gossipsub_event).await;
-            }
-            SwarmEvent::Behaviour(MeshBehaviourEvent::Identify(
-                identify_event,
-            )) => {
-                self.handle_identify_event(identify_event).await;
-            }
-            SwarmEvent::Behaviour(MeshBehaviourEvent::Ping(_ping_event)) => {
-                // handle ping events if needed
-            }
-            SwarmEvent::Behaviour(MeshBehaviourEvent::Mdns(mdns_event)) => {
-                self.handle_mdns_event(mdns_event).await;
-            }
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                println!("Connected to peer: {peer_id}");
-            }
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                println!("Disconnected from peer: {peer_id}");
-                self.known_peers.remove(&peer_id);
-            }
-            _ => {}
         }
     }
 
@@ -458,20 +447,36 @@ impl MeshNetwork {
         }
     }
 
-    async fn handle_mdns_event(&mut self, event: mdns::Event) {
+    async fn handle_mdns_event(
+        &mut self,
+        event: mdns::Event,
+        swarm: &mut Swarm<MeshBehavior>,
+    ) {
         match event {
             mdns::Event::Discovered(list) => {
-                for (peer_id, _multiaddr) in list {
-                    if !self.known_peers.contains(&peer_id) {
+                for (peer_id, multiaddr) in list {
+                    if !self.addr_book.contains_peer(&peer_id)
+                        && swarm.connected_peers().count()
+                            < self.networking_config.max_peers
+                    {
                         println!("Discovered mDNS peer: {peer_id}");
-                        self.known_peers.insert(peer_id);
+                        self.addr_book.add_peer(peer_id, multiaddr.clone());
+
+                        // dial the discovered peer to establish connection
+                        if let Err(e) = swarm.dial(multiaddr.clone()) {
+                            eprintln!(
+                                "Failed to dial mDNS peer {multiaddr}: {e}"
+                            );
+                            self.addr_book
+                                .record_connection_attempt(&peer_id, false);
+                        }
                     }
                 }
             }
             mdns::Event::Expired(list) => {
                 for (peer_id, _) in list {
                     println!("mDNS peer expired: {peer_id}");
-                    self.known_peers.remove(&peer_id);
+                    self.addr_book.remove_peer(&peer_id);
                 }
             }
         }
@@ -480,7 +485,7 @@ impl MeshNetwork {
     async fn handle_outgoing_message(
         &self,
         outgoing_msg: OutgoingMessage,
-        swarm: &mut Swarm<MeshBehaviour>,
+        swarm: &mut Swarm<MeshBehavior>,
     ) {
         match outgoing_msg {
             OutgoingMessage::Chat {

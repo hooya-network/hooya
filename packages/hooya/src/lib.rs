@@ -10,6 +10,7 @@ mod chunked_reader;
 
 pub use chunked_reader::*;
 
+pub mod addr_book;
 pub mod chat_handler;
 pub mod chatroom;
 pub mod cid;
@@ -37,4 +38,11 @@ impl std::fmt::Display for proto::Tag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.namespace, self.descriptor)
     }
+}
+
+/// Format a chat message for display and logging
+/// Returns: "HH:MM  <sender> content"
+pub fn format_chat_message(sender: &str, content: &str) -> String {
+    let timestamp = chrono::Local::now().format("%H:%M");
+    format!("{timestamp}  <{sender}> {content}")
 }

@@ -1,3 +1,4 @@
+use crate::chatroom::Chatroom;
 use crate::keys;
 use crate::local::{
     self, FileRow, ImageRow, TagMapRow, ThumbnailRow, VideoRow,
@@ -10,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sylow::KeyPair;
-use tokio::sync::{broadcast, RwLock, Semaphore};
+use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 
 pub fn sanitize_filestore_path(
     filestore_path: &Path,
@@ -36,13 +37,25 @@ pub fn sanitize_filestore_path(
 pub struct Runtime {
     pub filestore_path: PathBuf,
     pub db: local::Db,
-    pub processing_events: broadcast::Sender<ProcessingEvent>,
-    pub chat_events: broadcast::Sender<ChatEvent>,
+    pub instance_events: broadcast::Sender<InstanceEvent>,
     pub processing_cids: Arc<RwLock<HashSet<Vec<u8>>>>,
     pub node_keypair: KeyPair,
     pub consensus_keypair: Option<KeyPair>,
     pub config: HooyaConfig,
     pub cpu_semaphore: Semaphore,
+    pub mesh_tx: mpsc::Sender<crate::mesh_network::OutgoingMessage>,
+    pub chatroom: Chatroom,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceEvent {
+    pub event_type: InstanceEventType,
+}
+
+#[derive(Clone, Debug)]
+pub enum InstanceEventType {
+    Processing(ProcessingEvent),
+    Chat(ChatEvent),
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +168,32 @@ impl Runtime {
         });
 
         // ignore if no listeners
-        let _ = self.processing_events.send(event);
+        let instance_event = InstanceEvent {
+            event_type: InstanceEventType::Processing(event),
+        };
+        let _ = self.instance_events.send(instance_event);
+    }
+
+    pub fn emit_chat_event(
+        &self,
+        channel: String,
+        content: String,
+        node_id: String,
+        signature: Vec<u8>,
+    ) {
+        let chat_event = ChatEvent {
+            channel,
+            content,
+            node_id,
+            signature,
+        };
+
+        let instance_event = InstanceEvent {
+            event_type: InstanceEventType::Chat(chat_event),
+        };
+
+        // ignore if no listeners
+        let _ = self.instance_events.send(instance_event);
     }
 
     pub async fn get_processing_status(&self, cid: &[u8]) -> ProcessingStatus {
@@ -960,11 +998,12 @@ impl Runtime {
         &self,
         msg: crate::mesh_network::OutgoingMessage,
     ) -> Result<()> {
-        match msg {
+        // extract fields before sending
+        let (channel, content, node_id) = match &msg {
             crate::mesh_network::OutgoingMessage::Chat {
                 channel,
                 content,
-                signature,
+                signature: _,
             } => {
                 // validate channel name
                 let _log_path = self.path_within_filestore(
@@ -973,15 +1012,37 @@ impl Runtime {
                         .join(format!("{channel}.log")),
                 )?;
 
-                let node_id = self.node_id();
-
-                println!(
-                    "would send signed message from {}: channel={}, content={}, signature_len={}",
-                    node_id, channel, content, signature.len()
-                );
+                (channel.clone(), content.clone(), self.node_id())
             }
+        };
+
+        // send message to mesh network
+        if let Err(e) = self.mesh_tx.send(msg).await {
+            eprintln!("Failed to send message to mesh network: {}", e);
+            return Err(anyhow::anyhow!(
+                "Failed to send message to mesh network: {}",
+                e
+            ));
         }
+
+        // log locally
+        if let Err(e) =
+            self.log_chat_message(&channel, &node_id, &content).await
+        {
+            eprintln!("Failed to log chat message locally: {}", e);
+            // don't return error as message was sent successfully
+        }
+
         Ok(())
+    }
+
+    async fn log_chat_message(
+        &self,
+        channel: &str,
+        sender: &str,
+        content: &str,
+    ) -> Result<()> {
+        self.chatroom.log_message(channel, sender, content).await
     }
 
     pub fn sanitize_filestore_path(
@@ -1032,10 +1093,22 @@ impl Runtime {
             page_token.parse().unwrap_or(0)
         };
 
-        let messages: Vec<crate::proto::ChatMessageInfo> = rev_lines
-            .skip(start_line)
-            .take(page_size as usize)
-            .collect::<Result<Vec<_>, _>>()?
+        let mut rev_iter = rev_lines.skip(start_line);
+        let mut collected_lines = Vec::new();
+
+        // collect up to page_size lines
+        for _ in 0..page_size {
+            match rev_iter.next() {
+                Some(Ok(line)) => collected_lines.push(line),
+                Some(Err(e)) => return Err(e.into()),
+                None => break, // no more lines
+            }
+        }
+
+        // check if there are more lines for next_page_token
+        let has_more = rev_iter.next().is_some();
+
+        let messages: Vec<crate::proto::ChatMessageInfo> = collected_lines
             .into_iter()
             .rev()
             .map(|line| crate::proto::ChatMessageInfo {
@@ -1046,7 +1119,11 @@ impl Runtime {
             })
             .collect();
 
-        let next_page_token = (start_line + messages.len()).to_string();
+        let next_page_token = if has_more {
+            (start_line + messages.len()).to_string()
+        } else {
+            String::new()
+        };
 
         Ok((messages, next_page_token))
     }

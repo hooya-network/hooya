@@ -129,6 +129,37 @@ pub fn sign_message(kp: &KeyPair, message: &[u8]) -> Vec<u8> {
     signature.to_be_bytes().to_vec()
 }
 
+/// Derive a discv5 secp256k1 key from the BLS keypair
+pub fn derive_discv5_key(
+    bls_keypair: &KeyPair,
+) -> anyhow::Result<discv5::enr::CombinedKey> {
+    let secret_bytes = bls_keypair.secret_key.to_be_bytes();
+    let secp256k1_key =
+        discv5::enr::k256::SecretKey::from_bytes((&secret_bytes).into())
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create secp256k1 key: {}", e)
+            })?;
+    Ok(discv5::enr::CombinedKey::Secp256k1(secp256k1_key.into()))
+}
+
+/// Derive a libp2p keypair from the BLS keypair
+/// Uses ed25519 since secp256k1 feature may not be enabled
+pub fn derive_libp2p_key(
+    bls_keypair: &KeyPair,
+) -> anyhow::Result<libp2p::identity::Keypair> {
+    let secret_bytes = bls_keypair.secret_key.to_be_bytes();
+    // Use the first 32 bytes for ed25519 key generation
+    let mut ed25519_bytes = [0u8; 32];
+    ed25519_bytes.copy_from_slice(&secret_bytes[..32]);
+    let ed25519_key =
+        libp2p::identity::ed25519::SecretKey::try_from_bytes(ed25519_bytes)
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create ed25519 key: {}", e)
+            })?;
+    let keypair = libp2p::identity::ed25519::Keypair::from(ed25519_key);
+    Ok(libp2p::identity::Keypair::from(keypair))
+}
+
 /// load and optionally initialize the node and consensus keys
 ///
 /// node-secret is an identifier and signing key for the node

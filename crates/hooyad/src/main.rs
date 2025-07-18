@@ -4,20 +4,20 @@ use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, ChatEvent,
-    ChatEventsRequest, CidInfoReply, CidInfoRequest, CidThumbnailRequest,
-    CompleteUploadReply, CompleteUploadRequest, ContentAtCidRequest, FileChunk,
-    ForgetFileReply, ForgetFileRequest, GetChatChannelsReply,
-    GetChatChannelsRequest, GetChatHistoryReply, GetChatHistoryRequest,
-    GetUploadStatusReply, GetUploadStatusRequest, InstanceEventsRequest,
+    CidInfoReply, CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
+    CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
+    ForgetFileRequest, GetChatChannelsReply, GetChatChannelsRequest,
+    GetChatHistoryReply, GetChatHistoryRequest, GetUploadStatusReply,
+    GetUploadStatusRequest, InstanceEvent, InstanceEventsRequest,
     LocalFilePageReply, LocalFilePageRequest, ProcessingEvent,
-    ProcessingEventsRequest, ProcessingStatus, RandomLocalFileReply,
-    RandomLocalFileRequest, ReimportReply, ReimportRequest, SearchReply,
-    SearchRequest, SendChatMessageReply, SendChatMessageRequest,
-    StartUploadSessionReply, StartUploadSessionRequest, StreamToFilestoreReply,
-    SuggestTagReply, SuggestTagRequest, SystemInfoReply, SystemInfoRequest,
-    SystemStats, TagCidReply, TagCidRequest, TagsReply, TagsRequest,
-    UploadChunkReply, UploadChunkRequest, UploadStatus, VersionInfo,
-    VersionReply, VersionRequest,
+    ProcessingStatus, RandomLocalFileReply, RandomLocalFileRequest,
+    ReimportReply, ReimportRequest, SearchReply, SearchRequest,
+    SendChatMessageReply, SendChatMessageRequest, StartUploadSessionReply,
+    StartUploadSessionRequest, StreamToFilestoreReply, SuggestTagReply,
+    SuggestTagRequest, SystemInfoReply, SystemInfoRequest, SystemStats,
+    TagCidReply, TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
+    UploadChunkRequest, UploadStatus, VersionInfo, VersionReply,
+    VersionRequest,
 };
 use hooya::runtime::Runtime;
 use rand::distributions::DistString;
@@ -764,93 +764,63 @@ impl Control for IControl {
         Ok(Response::new(reply))
     }
 
-    type ProcessingEventsStream =
-        Pin<Box<dyn Stream<Item = Result<ProcessingEvent, Status>> + Send>>;
-
-    async fn processing_events(
-        &self,
-        request: Request<ProcessingEventsRequest>,
-    ) -> Result<Response<Self::ProcessingEventsStream>, Status> {
-        let req = request.into_inner();
-        let target_cid = req.cid;
-
-        let rx = self.runtime.processing_events.subscribe();
-
-        use tokio_stream::wrappers::BroadcastStream;
-        let stream = BroadcastStream::new(rx)
-            .filter_map(move |result| {
-                match result {
-                    Ok(event) => {
-                        if event.cid == target_cid {
-                            let proto_event = ProcessingEvent {
-                                cid: event.cid.clone(),
-                                event_type: match &event.event_type {
-                                    hooya::runtime::ProcessingEventType::Started => ProcessingStatus::ProcessingStarted as i32,
-                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { .. } => ProcessingStatus::ThumbnailGenerated as i32,
-                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { .. } => ProcessingStatus::VideoPreviewGenerated as i32,
-                                    hooya::runtime::ProcessingEventType::Finished => ProcessingStatus::ProcessingFinished as i32,
-                                    hooya::runtime::ProcessingEventType::Failed => ProcessingStatus::ProcessingFailed as i32,
-                                },
-                                error_message: event.error_message.clone(),
-                                long_edge: match &event.event_type {
-                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { long_edge, .. } => Some(*long_edge),
-                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { long_edge, .. } => Some(*long_edge),
-                                    _ => None,
-                                },
-                                mimetype: match &event.event_type {
-                                    hooya::runtime::ProcessingEventType::ThumbnailGenerated { mimetype, .. } => Some(mimetype.clone()),
-                                    hooya::runtime::ProcessingEventType::VideoPreviewGenerated { mimetype, .. } => Some(mimetype.clone()),
-                                    _ => None,
-                                },
-                            };
-                            Some(Ok(proto_event))
-                        } else {
-                            None
-                        }
-                    }
-                    Err(_) => None
-                }
-            });
-
-        Ok(Response::new(Box::pin(stream)))
-    }
-
     type InstanceEventsStream =
-        Pin<Box<dyn Stream<Item = Result<ProcessingEvent, Status>> + Send>>;
+        Pin<Box<dyn Stream<Item = Result<InstanceEvent, Status>> + Send>>;
 
     async fn instance_events(
         &self,
         _request: Request<InstanceEventsRequest>,
     ) -> Result<Response<Self::InstanceEventsStream>, Status> {
-        let rx = self.runtime.processing_events.subscribe();
+        let rx = self.runtime.instance_events.subscribe();
 
         use tokio_stream::wrappers::BroadcastStream;
         let stream = BroadcastStream::new(rx)
             .filter_map(move |result| {
                 match result {
-                    Ok(event) => {
-                        let proto_event = ProcessingEvent {
-                            cid: event.cid.clone(),
-                            event_type: match &event.event_type {
-                                hooya::runtime::ProcessingEventType::Started => ProcessingStatus::ProcessingStarted as i32,
-                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { .. } => ProcessingStatus::ThumbnailGenerated as i32,
-                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { .. } => ProcessingStatus::VideoPreviewGenerated as i32,
-                                hooya::runtime::ProcessingEventType::Finished => ProcessingStatus::ProcessingFinished as i32,
-                                hooya::runtime::ProcessingEventType::Failed => ProcessingStatus::ProcessingFailed as i32,
-                            },
-                            error_message: event.error_message.clone(),
-                            long_edge: match &event.event_type {
-                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { long_edge, .. } => Some(*long_edge),
-                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { long_edge, .. } => Some(*long_edge),
-                                _ => None,
-                            },
-                            mimetype: match &event.event_type {
-                                hooya::runtime::ProcessingEventType::ThumbnailGenerated { mimetype, .. } => Some(mimetype.clone()),
-                                hooya::runtime::ProcessingEventType::VideoPreviewGenerated { mimetype, .. } => Some(mimetype.clone()),
-                                _ => None,
-                            },
-                        };
-                        Some(Ok(proto_event))
+                    Ok(instance_event) => {
+                        match &instance_event.event_type {
+                            hooya::runtime::InstanceEventType::Processing(event) => {
+                                let proto_processing_event = ProcessingEvent {
+                                    cid: event.cid.clone(),
+                                    event_type: match &event.event_type {
+                                        hooya::runtime::ProcessingEventType::Started => ProcessingStatus::ProcessingStarted as i32,
+                                        hooya::runtime::ProcessingEventType::ThumbnailGenerated { .. } => ProcessingStatus::ThumbnailGenerated as i32,
+                                        hooya::runtime::ProcessingEventType::VideoPreviewGenerated { .. } => ProcessingStatus::VideoPreviewGenerated as i32,
+                                        hooya::runtime::ProcessingEventType::Finished => ProcessingStatus::ProcessingFinished as i32,
+                                        hooya::runtime::ProcessingEventType::Failed => ProcessingStatus::ProcessingFailed as i32,
+                                    },
+                                    error_message: event.error_message.clone(),
+                                    long_edge: match &event.event_type {
+                                        hooya::runtime::ProcessingEventType::ThumbnailGenerated { long_edge, .. } => Some(*long_edge),
+                                        hooya::runtime::ProcessingEventType::VideoPreviewGenerated { long_edge, .. } => Some(*long_edge),
+                                        _ => None,
+                                    },
+                                    mimetype: match &event.event_type {
+                                        hooya::runtime::ProcessingEventType::ThumbnailGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                        hooya::runtime::ProcessingEventType::VideoPreviewGenerated { mimetype, .. } => Some(mimetype.clone()),
+                                        _ => None,
+                                    },
+                                };
+
+                                let proto_instance_event = InstanceEvent {
+                                    event_type: Some(hooya::proto::instance_event::EventType::Processing(proto_processing_event)),
+                                };
+                                Some(Ok(proto_instance_event))
+                            }
+                            hooya::runtime::InstanceEventType::Chat(event) => {
+                                let proto_chat_event = ChatEvent {
+                                    channel: event.channel.clone(),
+                                    content: event.content.clone(),
+                                    node_id: event.node_id.clone(),
+                                    signature: event.signature.clone(),
+                                };
+
+                                let proto_instance_event = InstanceEvent {
+                                    event_type: Some(hooya::proto::instance_event::EventType::Chat(proto_chat_event)),
+                                };
+                                Some(Ok(proto_instance_event))
+                            }
+                        }
                     }
                     Err(_) => None
                 }
@@ -888,7 +858,7 @@ impl Control for IControl {
         let outgoing_msg = hooya::mesh_network::OutgoingMessage::Chat {
             channel: req.channel.clone(),
             content: req.content.clone(),
-            signature,
+            signature: signature.clone(),
         };
 
         if let Err(e) = self.runtime.send_outgoing_message(outgoing_msg).await {
@@ -897,6 +867,16 @@ impl Control for IControl {
                 e
             )));
         }
+
+        // emit chat event locally so the sender sees their own message immediately
+        let formatted_content =
+            hooya::format_chat_message(&self.runtime.node_id(), &req.content);
+        self.runtime.emit_chat_event(
+            req.channel.clone(),
+            formatted_content,
+            self.runtime.node_id().clone(),
+            signature,
+        );
 
         let message_id = rand::distributions::Alphanumeric
             .sample_string(&mut rand::thread_rng(), 16);
@@ -954,31 +934,6 @@ impl Control for IControl {
             ))),
         }
     }
-
-    type ChatEventsStream =
-        Pin<Box<dyn Stream<Item = Result<ChatEvent, Status>> + Send>>;
-    async fn chat_events(
-        &self,
-        _request: Request<ChatEventsRequest>,
-    ) -> Result<Response<Self::ChatEventsStream>, Status> {
-        let rx = self.runtime.chat_events.subscribe();
-        use tokio_stream::wrappers::BroadcastStream;
-        let stream =
-            BroadcastStream::new(rx).filter_map(move |result| match result {
-                Ok(event) => {
-                    let proto_event = ChatEvent {
-                        channel: event.channel,
-                        content: event.content,
-                        node_id: event.node_id,
-                        signature: event.signature,
-                    };
-                    Some(Ok(proto_event))
-                }
-                Err(_) => None,
-            });
-
-        Ok(Response::new(Box::pin(stream)))
-    }
 }
 
 #[tokio::main]
@@ -1029,8 +984,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.init_tables().await?;
     }
 
-    let (processing_events, _) = tokio::sync::broadcast::channel(1000);
-    let (chat_events, _) = tokio::sync::broadcast::channel(1000);
+    let (instance_events, _) = tokio::sync::broadcast::channel(1000);
 
     // create semaphore for CPU-bound tasks
     let cpu_semaphore = Semaphore::new(num_cpus::get());
@@ -1044,25 +998,211 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hooya_config::RuntimeConfig::new(filestore_path.clone());
     let config = runtime_config.load_hooya_config()?;
 
+    // create mesh network channel
+    let (mesh_tx, mesh_rx) = tokio::sync::mpsc::channel(1000);
+
+    // create chatroom
+    let chatroom = hooya::chatroom::Chatroom::new(filestore_path.clone());
+
+    // initialize mesh network
+    let instance_events_clone = instance_events.clone();
+    let node_id = hooya::keys::derive_node_id(&node_keypair);
+    let networking_config = config.networking.clone();
+    let chatroom_arc = std::sync::Arc::new(chatroom);
+
+    // derive keys for mesh network
+    let discv5_key = hooya::keys::derive_discv5_key(&node_keypair)?;
+    let libp2p_key = hooya::keys::derive_libp2p_key(&node_keypair)?;
+
+    let filestore_path_clone = filestore_path.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_mesh_network(
+            node_id,
+            networking_config,
+            mesh_rx,
+            instance_events_clone,
+            chatroom_arc,
+            discv5_key,
+            libp2p_key,
+            filestore_path_clone,
+        )
+        .await
+        {
+            eprintln!("mesh network failed: {}", e);
+        }
+    });
+
     Server::builder()
         .accept_http1(true)
         .add_service(ControlServer::new(IControl {
             runtime: Arc::new(Runtime {
-                filestore_path,
+                filestore_path: filestore_path.clone(),
                 db,
-                processing_events,
-                chat_events,
-                processing_cids: std::sync::Arc::new(tokio::sync::RwLock::new(
+                instance_events,
+                processing_cids: Arc::new(tokio::sync::RwLock::new(
                     std::collections::HashSet::new(),
                 )),
                 node_keypair,
                 consensus_keypair,
                 config,
                 cpu_semaphore,
+                mesh_tx,
+                chatroom: hooya::chatroom::Chatroom::new(
+                    filestore_path.clone(),
+                ),
             }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
     Ok(())
+}
+
+async fn run_mesh_network(
+    node_id: String,
+    networking_config: hooya_config::NetworkingConfig,
+    mesh_rx: tokio::sync::mpsc::Receiver<hooya::mesh_network::OutgoingMessage>,
+    instance_events: tokio::sync::broadcast::Sender<
+        hooya::runtime::InstanceEvent,
+    >,
+    chatroom: std::sync::Arc<hooya::chatroom::Chatroom>,
+    discv5_key: discv5::enr::CombinedKey,
+    libp2p_key: libp2p::identity::Keypair,
+    filestore_path: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    use libp2p::{
+        gossipsub::{
+            Behaviour as GossipsubBehavior, ConfigBuilder, MessageAuthenticity,
+            ValidationMode,
+        },
+        identify::{self, Behaviour as IdentifyBehavior},
+        mdns::{self, tokio::Behaviour as MdnsBehavior},
+        ping::{self, Behaviour as PingBehavior},
+        Multiaddr, SwarmBuilder,
+    };
+
+    // get discv5 configuration from networking config
+    let (ipv4_config, ipv6_config) =
+        networking_config.get_discv5_addresses().map_err(|e| {
+            anyhow::anyhow!("Invalid discv5 configuration: {}", e)
+        })?;
+
+    // create appropriate ListenConfig based on available addresses
+    let listen_config = discv5::ListenConfig::from_two_sockets(
+        ipv4_config.map(|(ip, port)| std::net::SocketAddrV4::new(ip, port)),
+        ipv6_config
+            .map(|(ip, port)| std::net::SocketAddrV6::new(ip, port, 0, 0)),
+    );
+
+    let discv5_config = discv5::ConfigBuilder::new(listen_config).build();
+
+    // build ENR with the first available address for advertising
+    let mut enr_builder = discv5::enr::Enr::builder();
+    if let Some((ipv4, port)) = ipv4_config {
+        enr_builder.ip4(ipv4).udp4(port);
+    }
+    if let Some((ipv6, port)) = ipv6_config {
+        enr_builder.ip6(ipv6).udp6(port);
+    }
+
+    let enr = enr_builder
+        .build(&discv5_key)
+        .map_err(|e| anyhow::anyhow!("Failed to build ENR: {}", e))?;
+
+    let mut discv5 = discv5::Discv5::new(enr, discv5_key, discv5_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create discv5: {}", e))?;
+    discv5
+        .start()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start discv5: {}", e))?;
+
+    // create libp2p gossipsub behavior
+    let gossipsub_config = ConfigBuilder::default()
+        .validation_mode(ValidationMode::Strict)
+        .build()
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to build gossipsub config: {}", e)
+        })?;
+
+    let gossipsub = GossipsubBehavior::new(
+        MessageAuthenticity::Signed(libp2p_key.clone()),
+        gossipsub_config,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create gossipsub: {}", e))?;
+
+    // create other behaviors
+    let identify = IdentifyBehavior::new(identify::Config::new(
+        "/hooya/mesh/1.0.0".to_string(),
+        libp2p_key.public(),
+    ));
+
+    let ping = PingBehavior::new(ping::Config::default());
+
+    let mdns = MdnsBehavior::new(
+        mdns::Config::default(),
+        libp2p_key.public().to_peer_id(),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create mdns: {}", e))?;
+
+    // create mesh behavior
+    let behavior = hooya::mesh_network::MeshBehavior {
+        gossipsub,
+        identify,
+        ping,
+        mdns,
+    };
+
+    // create swarm
+    let mut swarm = SwarmBuilder::with_existing_identity(libp2p_key)
+        .with_tokio()
+        .with_tcp(
+            libp2p::tcp::Config::default(),
+            libp2p::noise::Config::new,
+            libp2p::yamux::Config::default,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to configure TCP transport: {}", e)
+        })?
+        .with_behaviour(|_| behavior)
+        .map_err(|e| anyhow::anyhow!("Failed to set behavior: {}", e))?
+        .with_swarm_config(|cfg| {
+            cfg.with_idle_connection_timeout(std::time::Duration::from_secs(30))
+        })
+        .build();
+
+    // listen on configured addresses
+    for addr_str in &networking_config.listen_addresses {
+        let listen_addr: Multiaddr = addr_str.parse().map_err(|e| {
+            anyhow::anyhow!("Invalid listen address '{}': {}", addr_str, e)
+        })?;
+        swarm.listen_on(listen_addr).map_err(|e| {
+            anyhow::anyhow!("Failed to listen on {}: {}", addr_str, e)
+        })?;
+    }
+
+    // create chat handler
+    let chat_handler =
+        hooya::chat_handler::ChatMessageHandler::new(chatroom, instance_events);
+
+    // create and load addr_book
+    let runtime_config =
+        hooya_config::RuntimeConfig::new(filestore_path.clone());
+    let addr_book_path = runtime_config.addrbook_path();
+    let flush_interval = std::time::Duration::from_secs(300); // 5 minutes
+    let mut addr_book =
+        hooya::addr_book::AddrBook::new(addr_book_path, flush_interval);
+    if let Err(e) = addr_book.load().await {
+        eprintln!("Failed to load address book: {}", e);
+    }
+
+    // create mesh network
+    let mut mesh_network = hooya::mesh_network::MeshNetwork::new(
+        node_id,
+        networking_config,
+        addr_book,
+    );
+    mesh_network.add_handler(std::sync::Arc::new(chat_handler));
+
+    // run the main event loop
+    mesh_network.run(discv5, swarm, mesh_rx).await
 }

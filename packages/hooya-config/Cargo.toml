@@ -11,3 +11,4 @@ bcrypt = "0.17"
 rand = "0.8"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+libp2p = { version = "0.55", default-features = false }

@@ -15,11 +15,10 @@ use dotenv::dotenv;
 use futures_util::{StreamExt, TryStreamExt};
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
-    ChatEventsRequest, CidInfoRequest, CidThumbnailRequest,
-    CompleteUploadRequest, ContentAtCidRequest, ForgetFileRequest,
-    GetChatChannelsRequest, GetChatHistoryRequest, GetUploadStatusRequest,
-    InstanceEventsRequest, LocalFilePageRequest, ProcessingEventsRequest,
-    SearchQuery, SearchRequest, SendChatMessageRequest,
+    CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
+    ContentAtCidRequest, ForgetFileRequest, GetChatChannelsRequest,
+    GetChatHistoryRequest, GetUploadStatusRequest, InstanceEventsRequest,
+    LocalFilePageRequest, SearchQuery, SearchRequest, SendChatMessageRequest,
     StartUploadSessionRequest, SuggestTagRequest, SystemInfoRequest, Tag,
     TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
 };
@@ -185,9 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
         .route("/upload-status/:upload_id", get(upload_status))
-        .route("/api/events/processing/:cid", get(processing_events))
         .route("/api/events/instance", get(instance_events))
-        .route("/api/events/chat", get(chat_events))
         .route("/api/chat/channels", get(get_chat_channels))
         .route(
             "/api/chat/history/:channel/:page_token",
@@ -1590,74 +1587,13 @@ async fn upload_status(
     }
 }
 
-async fn processing_events(
-    Path(encoded_cid): Path<String>,
+/// Streams instance events (processing and chat events)
+async fn instance_events(
+    headers: HeaderMap,
     State(state): State<AState>,
 ) -> impl IntoResponse {
-    let cid = match decode_cid_param(&encoded_cid) {
-        Ok(cid) => cid,
-        Err(e) => return e.into_response(),
-    };
-
-    // start grpc stream
-    let request = ProcessingEventsRequest { cid: cid.clone() };
-
-    let mut stream = match state.client.clone().processing_events(request).await
-    {
-        Ok(response) => response.into_inner(),
-        Err(_) => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to start processing stream",
-            )
-                .into_response()
-        }
-    };
-
-    // convert grpc stream to sse stream
-    let sse_stream = async_stream::stream! {
-
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    let event_name = match event.event_type {
-                        0 => "processing_finished",      // ProcessingStatus::ProcessingFinished = 0
-                        1 => "processing_started",       // ProcessingStatus::ProcessingStarted = 1
-                        2 => "processing_failed",        // ProcessingStatus::ProcessingFailed = 2
-                        3 => "thumbnail_generated",      // ProcessingStatus::ThumbnailGenerated = 3
-                        4 => "video_preview_generated",  // ProcessingStatus::VideoPreviewGenerated = 4
-                        _ => "unknown",
-                    };
-
-                    // include metadata for thumbnail/video events
-                    let event_data = match event.event_type {
-                        3 | 4 => { // thumbnail_generated or video_preview_generated
-                            format!("{{\"long_edge\":{},\"mimetype\":\"{}\"}}",
-                                event.long_edge.unwrap_or(0),
-                                event.mimetype.as_deref().unwrap_or("")
-                            )
-                        }
-                        _ => "{}".to_string()
-                    };
-
-                    let sse_event = Event::default()
-                        .event(event_name)
-                        .data(event_data);
-                    yield Ok(sse_event);
-                }
-                Err(e) => {
-                    yield Err(anyhow::anyhow!("grpc error: {}", e));
-                    break;
-                }
-            }
-        }
-    };
-
-    Sse::new(sse_stream).into_response()
-}
-
-/// Streams instance events (mainly just files and thumbnails now)
-async fn instance_events(State(state): State<AState>) -> impl IntoResponse {
+    // check if user is authenticated for chat events
+    let is_authenticated = require_auth(&state, headers).is_ok();
     // start grpc stream for all instance events
     let request = InstanceEventsRequest {};
 
@@ -1676,33 +1612,58 @@ async fn instance_events(State(state): State<AState>) -> impl IntoResponse {
     let sse_stream = async_stream::stream! {
         while let Some(event_result) = stream.next().await {
             match event_result {
-                Ok(event) => {
-                    let event_name = match event.event_type {
-                        0 => "processing_finished",      // ProcessingStatus::ProcessingFinished = 0
-                        1 => "processing_started",       // ProcessingStatus::ProcessingStarted = 1
-                        2 => "processing_failed",        // ProcessingStatus::ProcessingFailed = 2
-                        3 => "thumbnail_generated",      // ProcessingStatus::ThumbnailGenerated = 3
-                        4 => "video_preview_generated",  // ProcessingStatus::VideoPreviewGenerated = 4
-                        _ => "unknown",
-                    };
+                Ok(instance_event) => {
+                    match instance_event.event_type {
+                        Some(hooya::proto::instance_event::EventType::Processing(event)) => {
+                            let event_name = match event.event_type {
+                                0 => "processing_finished",      // ProcessingStatus::ProcessingFinished = 0
+                                1 => "processing_started",       // ProcessingStatus::ProcessingStarted = 1
+                                2 => "processing_failed",        // ProcessingStatus::ProcessingFailed = 2
+                                3 => "thumbnail_generated",      // ProcessingStatus::ThumbnailGenerated = 3
+                                4 => "video_preview_generated",  // ProcessingStatus::VideoPreviewGenerated = 4
+                                _ => "unknown",
+                            };
 
-                    // include cid and metadata for all events
-                    let cid_str = hooya::cid::encode(&event.cid);
-                    let event_data = match event.event_type {
-                        3 | 4 => { // thumbnail_generated or video_preview_generated
-                            format!("{{\"cid\":\"{}\",\"long_edge\":{},\"mimetype\":\"{}\"}}",
-                                cid_str,
-                                event.long_edge.unwrap_or(0),
-                                event.mimetype.as_deref().unwrap_or("")
-                            )
+                            // include cid and metadata for all events
+                            let cid_str = hooya::cid::encode(&event.cid);
+                            let event_data = match event.event_type {
+                                3 | 4 => { // thumbnail_generated or video_preview_generated
+                                    format!("{{\"cid\":\"{}\",\"long_edge\":{},\"mimetype\":\"{}\"}}",
+                                        cid_str,
+                                        event.long_edge.unwrap_or(0),
+                                        event.mimetype.as_deref().unwrap_or("")
+                                    )
+                                }
+                                _ => format!("{{\"cid\":\"{}\"}}", cid_str)
+                            };
+
+                            let sse_event = Event::default()
+                                .event(event_name)
+                                .data(event_data);
+                            yield Ok(sse_event);
                         }
-                        _ => format!("{{\"cid\":\"{}\"}}", cid_str)
-                    };
+                        Some(hooya::proto::instance_event::EventType::Chat(chat_event)) => {
+                            // only send chat events to authenticated users
+                            if is_authenticated {
+                                let event_data = serde_json::json!({
+                                    "channel": chat_event.channel,
+                                    "content": chat_event.content,
+                                    "node_id": chat_event.node_id,
+                                    "signature": multibase::encode(hooya::keys::DEFAULT_MULTIBASE_BASE, &chat_event.signature)
+                                });
 
-                    let sse_event = Event::default()
-                        .event(event_name)
-                        .data(event_data);
-                    yield Ok(sse_event);
+                                let sse_event = Event::default()
+                                    .event("chat_message")
+                                    .data(event_data.to_string());
+                                yield Ok(sse_event);
+                            }
+                            // ignore chat events for unauthenticated users
+                        }
+                        None => {
+                            // ignore malformed events
+                            eprintln!("Received malformed instance event with no event_type");
+                        }
+                    }
                 }
                 Err(e) => {
                     yield Err(anyhow::anyhow!("grpc error: {}", e));
@@ -1851,53 +1812,6 @@ async fn get_chat_history(
         )
             .into_response(),
     }
-}
-
-async fn chat_events(
-    headers: HeaderMap,
-    State(state): State<AState>,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
-    }
-
-    let request = ChatEventsRequest {};
-    let mut stream = match state.client.clone().chat_events(request).await {
-        Ok(response) => response.into_inner(),
-        Err(_) => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to start chat events stream",
-            )
-                .into_response()
-        }
-    };
-
-    let sse_stream = async_stream::stream! {
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    let event_data = serde_json::json!({
-                        "channel": event.channel,
-                        "content": event.content,
-                        "node_id": event.node_id,
-                        "signature": multibase::encode(hooya::keys::DEFAULT_MULTIBASE_BASE, &event.signature)
-                    });
-
-                    let sse_event = Event::default()
-                        .event("chat_message")
-                        .data(event_data.to_string());
-                    yield Ok(sse_event);
-                }
-                Err(e) => {
-                    yield Err(anyhow::anyhow!("grpc error: {}", e));
-                    break;
-                }
-            }
-        }
-    };
-
-    Sse::new(sse_stream).into_response()
 }
 
 mod proxy_response {

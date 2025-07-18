@@ -37,20 +37,32 @@ impl Chatroom {
             "chat_history",
             &format!("{channel}.log"),
         )?;
+
+        // check if this is a new file that needs a date header
+        let is_new_file = !log_path.exists();
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .await?;
 
-        // check if day changed - lookup just in time if not cached
+        // if it's a new file, add the initial date header
+        if is_new_file {
+            let separator =
+                format!("--- Day changed {}\n", today.format("%a %b %d %Y"));
+            file.write_all(separator.as_bytes()).await?;
+            day_cache.insert(channel.to_string(), today);
+        }
+
+        // check if day changed - consult earlier lines if not cached
         let last_date = match day_cache.get(channel) {
             Some(date) => *date,
             None => {
                 let date = self
                     .get_last_date_from_log(&log_path)
                     .await
-                    .unwrap_or(today); // default to today if no log exists
+                    .unwrap_or(today);
                 day_cache.insert(channel.to_string(), date);
                 date
             }
