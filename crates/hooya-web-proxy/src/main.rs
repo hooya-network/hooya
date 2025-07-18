@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tonic::transport::Channel;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 #[derive(Clone)]
 struct AState {
@@ -80,7 +81,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("CORS origins: 'localhost' for any localhost port, or comma-separated URLs")
                 .default_value("localhost"),
         )
+        .arg(
+            Arg::new("log-level")
+                .long("log-level")
+                .env("HOOYA_WEB_PROXY_LOG_LEVEL")
+                .default_value("info")
+                .help("Set the log level (e.g., 'debug', 'info', 'warn')")
+        )
         .get_matches();
+
+    // initialize tracing
+    let log_level = matches.get_one::<String>("log-level").unwrap();
+    let rust_log = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+        .unwrap_or_else(|| log_level.clone());
+
+    tracing::subscriber::set_global_default(
+        FmtSubscriber::builder()
+            .with_env_filter(EnvFilter::new(rust_log))
+            .finish(),
+    )
+    .expect("setting default subscriber failed");
 
     // data dir
     let data_dir = matches.get_one::<PathBuf>("data-dir").unwrap().clone();

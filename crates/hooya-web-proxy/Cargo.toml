@@ -1,6 +1,6 @@
 [package]
 name = "hooya-web-proxy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["wesl-ee <w@wesl.ee>"]
 
@@ -31,3 +31,5 @@ jsonwebtoken = "9.0"
 bcrypt = "0.17"
 urlencoding = "2.1"
 multibase = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

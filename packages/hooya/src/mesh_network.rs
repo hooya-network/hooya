@@ -22,6 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tracing::{event, Level};
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
 
 /// Outgoing message types that can be sent over the mesh
@@ -167,14 +168,16 @@ impl DiscoveryManager {
             return;
         };
 
-        let txt_records =
-            match resolver.txt_lookup(&self.bootstrap_domain).await {
-                Ok(records) => records,
-                Err(e) => {
-                    eprintln!("Failed to lookup DNS bootstrap records: {e}");
-                    return;
-                }
-            };
+        let txt_records = match resolver
+            .txt_lookup(&self.bootstrap_domain)
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => {
+                event!(Level::WARN, %e, bootstrap_domain = %self.bootstrap_domain, "failed to lookup DNS bootstrap records");
+                return;
+            }
+        };
 
         for record in txt_records.iter() {
             for txt_data in record.iter() {
@@ -192,8 +195,8 @@ impl DiscoveryManager {
                     Err(_) => continue,
                 };
 
-                if let Err(e) = discv5.add_enr(enr) {
-                    eprintln!("Failed to add ENR from DNS: {e}");
+                if let Err(e) = discv5.add_enr(enr.clone()) {
+                    event!(Level::WARN, %e, %enr, "failed to add ENR from DNS");
                 }
             }
         }
@@ -240,9 +243,9 @@ impl MeshNetwork {
                 break;
             }
 
-            println!("Attempting to reconnect to known peer: {peer_id}");
+            event!(Level::INFO, %peer_id, %multiaddr, "attempting to reconnect to known peer");
             if let Err(e) = swarm.dial(multiaddr.clone()) {
-                eprintln!("Failed to dial known peer {multiaddr}: {e}");
+                event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial known peer");
                 self.addr_book.record_connection_attempt(&peer_id, false);
             }
         }
@@ -315,10 +318,6 @@ impl MeshNetwork {
                 // Discovery cycle
                 _ = tokio::time::sleep(discovery_timeout) => {
                     discovery_manager.run_discovery_cycle(&discv5, swarm.connected_peers().count(), self.networking_config.max_peers).await;
-                    // flush addr_book periodically
-                    if let Err(e) = self.addr_book.maybe_flush().await {
-                        eprintln!("Failed to flush addr_book: {e}");
-                    }
                 }
 
                 // Handle discv5 peer discovery
@@ -342,12 +341,12 @@ impl MeshNetwork {
                             self.handle_mdns_event(mdns_event, &mut swarm).await;
                         }
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                            println!("Connected to peer: {peer_id}");
+                            event!(Level::INFO, %peer_id, "peer connected");
                             self.addr_book.record_connection_attempt(&peer_id, true);
                         }
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                            println!("Disconnected from peer: {peer_id}");
-                            self.addr_book.remove_peer(&peer_id);
+                            event!(Level::INFO, %peer_id, "peer disconnected");
+                            self.addr_book.remove_peer(&peer_id).await;
                         }
                         _ => {}
                     }
@@ -382,12 +381,14 @@ impl MeshNetwork {
                         && swarm.connected_peers().count()
                             < self.networking_config.max_peers
                     {
-                        println!("discovered new peer via discv5: {peer_id}");
-                        self.addr_book.add_peer(peer_id, multiaddr.clone());
+                        event!(Level::INFO, %peer_id, %multiaddr, "discovered new peer via discv5");
+                        self.addr_book
+                            .add_peer(peer_id, multiaddr.clone())
+                            .await;
 
                         // attempt to dial
                         if let Err(e) = swarm.dial(multiaddr.clone()) {
-                            eprintln!("Failed to dial peer {multiaddr}: {e}");
+                            event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial discovered peer");
                             self.addr_book
                                 .record_connection_attempt(&peer_id, false);
                         }
@@ -407,10 +408,11 @@ impl MeshNetwork {
             if message.data.len()
                 > self.networking_config.max_message_size_bytes
             {
-                eprintln!(
-                    "Dropped oversized message: {} bytes > {} bytes limit",
-                    message.data.len(),
-                    self.networking_config.max_message_size_bytes
+                event!(
+                    Level::WARN,
+                    message_size = message.data.len(),
+                    size_limit = self.networking_config.max_message_size_bytes,
+                    "dropped oversized message"
                 );
                 return;
             }
@@ -418,7 +420,7 @@ impl MeshNetwork {
             match MeshMessage::decode(&*message.data) {
                 Ok(mesh_msg) => {
                     if !self.validate_mesh_message(&mesh_msg) {
-                        eprintln!("Dropped invalid mesh message");
+                        event!(Level::DEBUG, "dropped invalid mesh message");
                         return;
                     }
 
@@ -427,15 +429,13 @@ impl MeshNetwork {
                             if let Err(e) =
                                 handler.handle_message(mesh_msg.clone())
                             {
-                                eprintln!(
-                                    "Handler failed to process message: {e}"
-                                );
+                                event!(Level::ERROR, %e, "handler failed to process message");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to decode mesh message: {e}");
+                    event!(Level::WARN, %e, "failed to decode mesh message");
                 }
             }
         }
@@ -443,7 +443,7 @@ impl MeshNetwork {
 
     async fn handle_identify_event(&self, event: identify::Event) {
         if let identify::Event::Received { peer_id, info: _ } = event {
-            println!("Identified peer: {peer_id}");
+            event!(Level::DEBUG, %peer_id, "identified peer");
         }
     }
 
@@ -459,14 +459,14 @@ impl MeshNetwork {
                         && swarm.connected_peers().count()
                             < self.networking_config.max_peers
                     {
-                        println!("Discovered mDNS peer: {peer_id}");
-                        self.addr_book.add_peer(peer_id, multiaddr.clone());
+                        event!(Level::INFO, %peer_id, %multiaddr, "discovered mDNS peer");
+                        self.addr_book
+                            .add_peer(peer_id, multiaddr.clone())
+                            .await;
 
                         // dial the discovered peer to establish connection
                         if let Err(e) = swarm.dial(multiaddr.clone()) {
-                            eprintln!(
-                                "Failed to dial mDNS peer {multiaddr}: {e}"
-                            );
+                            event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial mDNS peer");
                             self.addr_book
                                 .record_connection_attempt(&peer_id, false);
                         }
@@ -475,8 +475,8 @@ impl MeshNetwork {
             }
             mdns::Event::Expired(list) => {
                 for (peer_id, _) in list {
-                    println!("mDNS peer expired: {peer_id}");
-                    self.addr_book.remove_peer(&peer_id);
+                    event!(Level::DEBUG, %peer_id, "mDNS peer expired");
+                    self.addr_book.remove_peer(&peer_id).await;
                 }
             }
         }
@@ -514,7 +514,7 @@ impl MeshNetwork {
                 if let Err(e) =
                     swarm.behaviour_mut().gossipsub.publish(topic, encoded)
                 {
-                    eprintln!("Failed to publish message: {e}");
+                    event!(Level::ERROR, %e, "failed to publish message");
                 }
             }
         }

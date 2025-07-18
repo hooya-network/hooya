@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tracing::{event, Level};
 
 /// represents a peer we've discovered and can redial
 #[derive(Debug, Clone)]
@@ -78,11 +79,18 @@ impl AddrBook {
             }
         }
 
+        event!(Level::INFO,
+            loaded_peers = loaded_count,
+            invalid_peers = invalid_count,
+            path = %self.store_path.display(),
+            "loaded addr_book"
+        );
+
         Ok(())
     }
 
     /// add or update a peer in the store
-    pub fn add_peer(&mut self, peer_id: PeerId, multiaddr: Multiaddr) {
+    pub async fn add_peer(&mut self, peer_id: PeerId, multiaddr: Multiaddr) {
         let now = chrono::Utc::now().timestamp() as u64;
 
         self.peers
@@ -97,11 +105,19 @@ impl AddrBook {
                 connection_attempts: 0,
                 last_connection_attempt: None,
             });
+
+        if let Err(e) = self.maybe_flush().await {
+            event!(Level::ERROR, %e, "failed to flush addr_book after adding peer");
+        }
     }
 
     /// remove a peer from the store
-    pub fn remove_peer(&mut self, peer_id: &PeerId) {
+    pub async fn remove_peer(&mut self, peer_id: &PeerId) {
         self.peers.remove(peer_id);
+
+        if let Err(e) = self.maybe_flush().await {
+            event!(Level::ERROR, %e, "failed to flush addr_book after removing peer");
+        }
     }
 
     /// get all known peers
@@ -138,7 +154,11 @@ impl AddrBook {
 
         if should_flush {
             let peer_count = self.peers.len();
-            println!("peer count: {}", peer_count);
+            event!(Level::INFO,
+                peer_count = peer_count,
+                path = %self.store_path.display(),
+                "flushing addr_book to disk"
+            );
             self.flush().await?;
             self.last_flush = Some(now);
         }
@@ -150,10 +170,9 @@ impl AddrBook {
     pub async fn flush(&self) -> Result<()> {
         // ensure parent directory exists
         if let Some(parent) = self.store_path.parent() {
-            fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
 
-        // convert to serializable format - only store multiaddr
         let serializable_peers: HashMap<String, StoredPeer> = self
             .peers
             .iter()
@@ -168,7 +187,7 @@ impl AddrBook {
             .collect();
 
         let content = toml::to_string_pretty(&serializable_peers)?;
-        fs::write(&self.store_path, content)?;
+        tokio::fs::write(&self.store_path, content).await?;
 
         Ok(())
     }

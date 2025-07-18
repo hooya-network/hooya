@@ -1,6 +1,6 @@
 [package]
 name = "hooyad"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["wesl-ee <w@wesl.ee>"]
 
@@ -28,3 +28,5 @@ num_cpus = "1.0"
 libp2p = { version = "0.53", features = ["gossipsub", "identify", "ping", "tcp", "tokio", "macros", "dns", "mdns", "noise", "yamux"] }
 discv5 = "0.4"
 enr = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,6 +1,6 @@
 [package]
 name = "hooya-client"
-version = "0.1.0-prealpha"
+version = "0.1.1"
 edition = "2021"
 authors = ["wesl-ee <w@wesl.ee>"]
 

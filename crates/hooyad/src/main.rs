@@ -33,6 +33,8 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status};
+use tracing::{event, Level};
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024;
 
@@ -955,7 +957,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .default_value(&**hooya_config::DEFAULT_DATA_DIR),
         )
         .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
+        .arg(
+            Arg::new("log-level")
+                .long("log-level")
+                .env("HOOYAD_LOG_LEVEL")
+                .default_value("info")
+                .help("Set the log level (e.g., 'debug', 'info', 'warn')"),
+        )
         .get_matches();
+
+    // initialize tracing
+    let log_level = matches.get_one::<String>("log-level").unwrap();
+    let rust_log = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+        .unwrap_or_else(|| log_level.clone());
+
+    tracing::subscriber::set_global_default(
+        FmtSubscriber::builder()
+            .with_env_filter(EnvFilter::new(rust_log))
+            .finish(),
+    )
+    .expect("setting default subscriber failed");
 
     // filestore path
     let filestore_path =
@@ -1028,7 +1051,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
         {
-            eprintln!("mesh network failed: {}", e);
+            event!(Level::ERROR, %e, "mesh network failed");
         }
     });
 
@@ -1192,7 +1215,7 @@ async fn run_mesh_network(
     let mut addr_book =
         hooya::addr_book::AddrBook::new(addr_book_path, flush_interval);
     if let Err(e) = addr_book.load().await {
-        eprintln!("Failed to load address book: {}", e);
+        event!(Level::WARN, %e, "failed to load address book");
     }
 
     // create mesh network
