@@ -8,7 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use sylow::{
-    FieldExtensionTrait, Fp, Fr, G2Affine, G2Projective, GroupTrait, KeyPair,
+    sign, verify, FieldExtensionTrait, Fp, Fr, G1Affine, G1Projective,
+    G2Affine, G2Projective, GroupTrait, KeyPair,
 };
 
 pub const DEFAULT_MULTIBASE_BASE: Base = multibase::Base::Base58Btc;
@@ -77,7 +78,7 @@ pub fn get_or_create_bls_key_at_path(
 }
 
 /// Convert a BLS public key to raw bytes (128 bytes)
-fn keypair_pubkey_raw_bytes(kp: &KeyPair) -> [u8; 128] {
+pub fn keypair_pubkey_raw_bytes(kp: &KeyPair) -> [u8; 128] {
     let mut point = G2Affine::from(kp.public_key).to_be_bytes();
 
     // I can't remember why I flipped these but it was important
@@ -113,20 +114,50 @@ pub fn derive_node_id(kp: &KeyPair) -> String {
 
 /// Sign a message using the BLS keypair
 pub fn sign_message(kp: &KeyPair, message: &[u8]) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(message);
-    let hash = hasher.finalize();
+    let signature = sign(&kp.secret_key, message).expect("Signing failed");
+    // to bytes because G1Projective is hard to work w
+    G1Affine::from(signature).to_be_bytes().to_vec()
+}
 
-    // Convert hash to Fr scalar for BLS signature
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(&hash[..32]);
-    let scalar =
-        Fr::from_be_bytes(&bytes).unwrap_or_else(|| Fr::new(0u64.into()));
+/// Verify a BLS signature using the public key
+pub fn verify_signature(
+    pubkey_bytes: &[u8],
+    message: &[u8],
+    signature_bytes: &[u8],
+) -> anyhow::Result<bool> {
+    if pubkey_bytes.len() != 128 {
+        return Ok(false);
+    }
 
-    // BLS signature: scalar * secret_key
-    let signature = kp.secret_key * scalar.into();
+    let mut pubkey_array = [0u8; 128];
+    pubkey_array.copy_from_slice(pubkey_bytes);
 
-    signature.to_be_bytes().to_vec()
+    // reverse the coordinate swapping from keypair_pubkey_raw_bytes
+    let (x, y) = pubkey_array.split_at_mut(64);
+    let (x1, x2) = x.split_at_mut(32);
+    let (y1, y2) = y.split_at_mut(32);
+
+    x2.swap_with_slice(x1);
+    y2.swap_with_slice(y1);
+
+    let public_key = G2Affine::from_be_bytes(&pubkey_array)
+        .into_option()
+        .ok_or_else(|| anyhow::anyhow!("invalid public key bytes"))?;
+
+    // reconstruct signature from bytes
+    if signature_bytes.len() != 64 {
+        return Ok(false);
+    }
+
+    let mut sig_array = [0u8; 64];
+    sig_array.copy_from_slice(signature_bytes);
+
+    let signature = G1Affine::from_be_bytes(&sig_array)
+        .into_option()
+        .ok_or_else(|| anyhow::anyhow!("invalid signature bytes"))?;
+
+    verify(&public_key, message, &G1Projective::from(signature))
+        .map_err(|e| anyhow::anyhow!("verification failed: {:?}", e))
 }
 
 /// Derive a discv5 secp256k1 key from the BLS keypair
@@ -258,5 +289,33 @@ mod tests {
             consensus_kp_created.secret_key,
             consensus_kp2.unwrap().secret_key
         );
+    }
+
+    #[test]
+    fn test_signature_verification() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test-key");
+        let kp = write_secret_bls_key_at_path(&key_path).unwrap();
+
+        let message = b"test message";
+        let signature = sign_message(&kp, message);
+        let pubkey_bytes = keypair_pubkey_raw_bytes(&kp);
+
+        // valid signature should verify
+        assert!(verify_signature(&pubkey_bytes, message, &signature).unwrap());
+
+        // tampered message should not verify
+        let tampered_message = b"tampered message";
+        assert!(
+            !verify_signature(&pubkey_bytes, tampered_message, &signature)
+                .unwrap()
+        );
+
+        // tampered signature should not verify
+        let mut tampered_signature = signature.clone();
+        tampered_signature[0] ^= 1;
+        let tampered_result =
+            verify_signature(&pubkey_bytes, message, &tampered_signature);
+        assert!(tampered_result.is_err() || !tampered_result.unwrap());
     }
 }

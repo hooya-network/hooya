@@ -26,6 +26,16 @@ use sqlx::{Sqlite, SqlitePool};
 use std::{
     collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, time::Instant,
 };
+use libp2p::{
+    gossipsub::{
+        Behaviour as GossipsubBehavior, ConfigBuilder, MessageAuthenticity,
+        ValidationMode,
+    },
+    identify::{self, Behaviour as IdentifyBehavior},
+    mdns::{self, tokio::Behaviour as MdnsBehavior},
+    ping::{self, Behaviour as PingBehavior},
+    Multiaddr, SwarmBuilder,
+};
 use tokio::{
     fs::File,
     io::AsyncWriteExt,
@@ -857,10 +867,16 @@ impl Control for IControl {
             message_to_sign.as_bytes(),
         );
 
+        // get the public key bytes
+        let pubkey =
+            hooya::keys::keypair_pubkey_raw_bytes(&self.runtime.node_keypair)
+                .to_vec();
+
         let outgoing_msg = hooya::mesh_network::OutgoingMessage::Chat {
             channel: req.channel.clone(),
             content: req.content.clone(),
             signature: signature.clone(),
+            pubkey,
         };
 
         if let Err(e) = self.runtime.send_outgoing_message(outgoing_msg).await {
@@ -1093,17 +1109,6 @@ async fn run_mesh_network(
     libp2p_key: libp2p::identity::Keypair,
     filestore_path: std::path::PathBuf,
 ) -> anyhow::Result<()> {
-    use libp2p::{
-        gossipsub::{
-            Behaviour as GossipsubBehavior, ConfigBuilder, MessageAuthenticity,
-            ValidationMode,
-        },
-        identify::{self, Behaviour as IdentifyBehavior},
-        mdns::{self, tokio::Behaviour as MdnsBehavior},
-        ping::{self, Behaviour as PingBehavior},
-        Multiaddr, SwarmBuilder,
-    };
-
     // get discv5 configuration from networking config
     let (ipv4_config, ipv6_config) =
         networking_config.get_discv5_addresses().map_err(|e| {

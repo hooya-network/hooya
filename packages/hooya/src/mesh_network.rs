@@ -33,6 +33,7 @@ pub enum OutgoingMessage {
         content: String,
         // TODO(wesl-ee) this should probably be on all messages
         signature: Vec<u8>,
+        pubkey: Vec<u8>,
     },
 }
 
@@ -492,6 +493,7 @@ impl MeshNetwork {
                 channel,
                 content,
                 signature,
+                pubkey,
             } => {
                 let topic = IdentTopic::new(format!("/chat/room/{channel}"));
 
@@ -505,6 +507,7 @@ impl MeshNetwork {
                     timestamp: chrono::Utc::now().timestamp() as u64,
                     sender_node_id: self.node_id.clone(),
                     signature: signature.clone(),
+                    pubkey: pubkey.clone(),
                     payload: Some(crate::mesh::mesh_message::Payload::Chat(
                         chat_msg,
                     )),
@@ -578,6 +581,30 @@ impl MeshNetwork {
             || mesh_msg.sender_node_id.len() > 64
         {
             return false;
+        }
+
+        // verify signature using pubkey
+        if let Some(payload) = &mesh_msg.payload {
+            match payload {
+                crate::mesh::mesh_message::Payload::Chat(chat_msg) => {
+                    let message_to_verify =
+                        format!("{}:{}", chat_msg.channel, chat_msg.content);
+                    match crate::keys::verify_signature(
+                        &mesh_msg.pubkey,
+                        message_to_verify.as_bytes(),
+                        &mesh_msg.signature,
+                    ) {
+                        Ok(valid) => {
+                            if !valid {
+                                return false;
+                            }
+                        }
+                        Err(_) => {
+                            return false;
+                        }
+                    }
+                }
+            }
         }
 
         true

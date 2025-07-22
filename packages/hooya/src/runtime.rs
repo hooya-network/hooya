@@ -1004,6 +1004,7 @@ impl Runtime {
                 channel,
                 content,
                 signature: _,
+                pubkey: _,
             } => {
                 // validate channel name
                 let _log_path = self.path_within_filestore(
