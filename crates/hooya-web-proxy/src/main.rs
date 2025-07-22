@@ -368,7 +368,7 @@ async fn login(
                 (Ok(access_token), Ok(refresh_token)) => {
                     // access token is a cookie
                     let cookie_header = format!(
-                        "jwt={}; HttpOnly; Secure; SameSite=Lax; Max-Age=900",
+                        "jwt={}; HttpOnly; SameSite=Lax; Max-Age=900",
                         access_token
                     );
 
@@ -403,7 +403,7 @@ async fn login(
 async fn logout() -> impl IntoResponse {
     // lol
     // could keep this serverside and void but not important right now
-    let clear_cookie = "jwt=; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    let clear_cookie = "jwt=; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     response

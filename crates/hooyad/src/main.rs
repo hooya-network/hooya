@@ -20,12 +20,6 @@ use hooya::proto::{
     VersionRequest,
 };
 use hooya::runtime::Runtime;
-use rand::distributions::DistString;
-use sqlx::migrate::MigrateDatabase;
-use sqlx::{Sqlite, SqlitePool};
-use std::{
-    collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, time::Instant,
-};
 use libp2p::{
     gossipsub::{
         Behaviour as GossipsubBehavior, ConfigBuilder, MessageAuthenticity,
@@ -35,6 +29,12 @@ use libp2p::{
     mdns::{self, tokio::Behaviour as MdnsBehavior},
     ping::{self, Behaviour as PingBehavior},
     Multiaddr, SwarmBuilder,
+};
+use rand::distributions::DistString;
+use sqlx::migrate::MigrateDatabase;
+use sqlx::{Sqlite, SqlitePool};
+use std::{
+    collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, time::Instant,
 };
 use tokio::{
     fs::File,
