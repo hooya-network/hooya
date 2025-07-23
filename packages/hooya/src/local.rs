@@ -685,8 +685,19 @@ impl Db {
 
         let mut files: Vec<File> = Vec::with_capacity(raw_files.len());
         for raw_file in raw_files.into_iter() {
-            let thumbnails =
-                self.fetch_thumbnails_for(raw_file.try_get("Cid")?).await?;
+            let cid: Vec<u8> = raw_file.try_get("Cid")?;
+            let thumbnails = self.fetch_thumbnails_for(&cid).await?;
+
+            // fetch tags for this file using existing method
+            let tag_rows = self.file_tags(cid.clone()).await?;
+            let tags = tag_rows
+                .into_iter()
+                .map(|tag_row| Tag {
+                    namespace: tag_row.namespace,
+                    descriptor: tag_row.descriptor,
+                })
+                .collect();
+
             let ext_file = if let Ok(height) = raw_file.try_get("ImageHeight?")
             {
                 let colors = raw_file
@@ -704,7 +715,7 @@ impl Db {
             } else if let Ok(height) = raw_file.try_get("VideoHeight?") {
                 Some(ExtFile::Video(crate::proto::Video {
                     height,
-                    width: raw_file.try_get("VideoWidth")?,
+                    width: raw_file.try_get("VideoWidth?")?,
                     aspect_ratio: raw_file.try_get("VideoRatio?")?,
                     thumbnails,
                     duration: raw_file.try_get("VideoDuration?")?,
@@ -714,11 +725,12 @@ impl Db {
             };
 
             files.push(File {
-                cid: raw_file.try_get("Cid")?,
+                cid,
                 size: raw_file.try_get("Size")?,
                 mimetype: raw_file.try_get("Mimetype")?,
                 processing_status: Default::default(),
                 ext_file,
+                tags,
             });
         }
 

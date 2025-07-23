@@ -1,6 +1,6 @@
 use anyhow::Result;
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::{
         sse::{Event, Sse},
@@ -199,7 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/suggest-tag/:query", get(suggest_tag_with_query))
         .route("/suggest-tag", get(suggest_tag))
         .route("/login", post(login))
-        .route("/logout", post(logout))
         .route("/tag-cid/:cid", patch(tag_cid))
         .route("/tag-cid/:cid", delete(untag_cid))
         .route("/start-upload", post(start_upload))
@@ -239,6 +238,11 @@ struct LoginData {
     refresh_token: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct SignatureQuery {
+    sig: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ClaimData {
     user_id: u64,
@@ -254,8 +258,16 @@ struct RefreshClaimData {
     token_type: String, // "refresh"
 }
 
+#[derive(Serialize, Deserialize)]
+struct SignatureClaimData {
+    user_id: u64,
+    exp: usize,
+    iat: usize,
+}
+
 #[derive(Serialize)]
 struct LoginResponse {
+    access_token: String,
     refresh_token: String,
 }
 
@@ -299,18 +311,11 @@ async fn login(
                     &EncodingKey::from_secret(&state.jwt_secret),
                 ) {
                     Ok(access_token) => {
-                        // issue new access token
-                        let cookie_header = format!(
-                            "jwt={}; HttpOnly; SameSite=Lax; Max-Age=900",
-                            access_token
-                        );
-                        let mut response =
-                            StatusCode::NO_CONTENT.into_response();
-                        response.headers_mut().insert(
-                            "Set-Cookie",
-                            cookie_header.parse().unwrap(),
-                        );
-                        response
+                        let response_body = LoginResponse {
+                            access_token,
+                            refresh_token: refresh_token.clone(),
+                        };
+                        Json(response_body).into_response()
                     }
                     Err(_) => (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -366,20 +371,11 @@ async fn login(
                 ),
             ) {
                 (Ok(access_token), Ok(refresh_token)) => {
-                    // access token is a cookie
-                    let cookie_header = format!(
-                        "jwt={}; HttpOnly; SameSite=Lax; Max-Age=900",
-                        access_token
-                    );
-
-                    // the client should pull the access token out of the response
-                    let response_body = LoginResponse { refresh_token };
-                    let mut response = Json(response_body).into_response();
-
-                    response
-                        .headers_mut()
-                        .insert("Set-Cookie", cookie_header.parse().unwrap());
-                    response
+                    let response_body = LoginResponse {
+                        access_token,
+                        refresh_token,
+                    };
+                    Json(response_body).into_response()
                 }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -399,43 +395,14 @@ async fn login(
     }
 }
 
-/// logs a user out
-async fn logout() -> impl IntoResponse {
-    // lol
-    // could keep this serverside and void but not important right now
-    let clear_cookie = "jwt=; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
-
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response
-        .headers_mut()
-        .insert("Set-Cookie", clear_cookie.parse().unwrap());
-    response
-}
-
 fn check_auth(state: &AState, headers: &HeaderMap) -> bool {
     require_auth(state, headers.clone()).is_ok()
 }
 
-async fn check_file_access(
-    client: &mut hooya::proto::control_client::ControlClient<
-        tonic::transport::Channel,
-    >,
-    cid: &[u8],
+fn check_file_visibility(
+    tags: &[hooya::proto::Tag],
     authenticated: bool,
 ) -> Result<(), axum::response::Response> {
-    // get file tags to determine visibility
-    let tags_resp = client
-        // I don't like that this adds a roundtrip to the daemon,
-        // maybe we can pack visibility_filter in to every request
-        .tags(hooya::proto::TagsRequest { cid: cid.to_vec() })
-        .await
-        .map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get file tags")
-                .into_response()
-        })?;
-
-    let tags = tags_resp.into_inner().tags;
-
     // check if file has private visibility tag
     let is_private = tags.iter().any(|tag| {
         tag.namespace == "visibility" && tag.descriptor == "private"
@@ -449,60 +416,46 @@ async fn check_file_access(
     Ok(())
 }
 
+fn validate_signature(
+    jwt_secret: &[u8; 32],
+    signature: &str,
+) -> Result<(), jsonwebtoken::errors::Error> {
+    let token_data = decode::<SignatureClaimData>(
+        signature,
+        &DecodingKey::from_secret(jwt_secret),
+        &Validation::new(Algorithm::HS256),
+    )?;
+
+    // check if token is expired
+    if token_data.claims.exp < chrono::Utc::now().timestamp() as usize {
+        return Err(jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature,
+        ));
+    }
+
+    Ok(())
+}
+
 fn require_auth(
     state: &AState,
     headers: HeaderMap,
 ) -> Result<ClaimData, axum::response::Response> {
-    // try authorization header first
-    let auth_header = headers
+    // only check authorization header
+    let token = headers
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            (StatusCode::UNAUTHORIZED, "Authorization header missing")
+                .into_response()
+        })?;
 
-    // if no authorization header, try cookie header
-    // we shouldn't be this nice but it's probably easier
-    // for some clients to use like this
-    let cookie_token = if auth_header.is_none() {
-        headers
-            .get("Cookie")
-            .and_then(|h| h.to_str().ok())
-            .and_then(|cookies| {
-                cookies.split(';').find_map(|cookie| {
-                    let cookie = cookie.trim();
-                    if cookie.starts_with("jwt=") {
-                        Some(&cookie[4..])
-                    } else {
-                        None
-                    }
-                })
-            })
-    } else {
-        None
-    };
-
-    let token = match auth_header.or(cookie_token) {
-        Some(token) => token,
-        None => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Authorization header or jwt cookie missing",
-            )
-                .into_response())
-        }
-    };
-
-    let token_data = match decode::<ClaimData>(
+    let token_data = decode::<ClaimData>(
         token,
         &DecodingKey::from_secret(&state.jwt_secret),
         &Validation::new(Algorithm::HS256),
-    ) {
-        Ok(data) => data,
-        Err(_) => {
-            return Err(
-                (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
-            )
-        }
-    };
+    )
+    .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid token").into_response())?;
 
     if token_data.claims.exp < chrono::Utc::now().timestamp() as usize {
         return Err((StatusCode::UNAUTHORIZED, "Expired token").into_response());
@@ -727,20 +680,23 @@ async fn cid_content(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
     headers: HeaderMap,
+    Query(query): Query<SignatureQuery>,
 ) -> impl IntoResponse {
     let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
         Err(e) => return e.into_response(),
     };
 
-    let authenticated = check_auth(&state, &headers);
-    let mut client = state.client;
+    // check auth via signature or header
+    let authenticated = if let Some(sig) = &query.sig {
+        validate_signature(&state.jwt_secret, sig).is_ok()
+    } else {
+        check_auth(&state, &headers)
+    };
 
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
-    // get file info first to check size for range requests
+    // get file info for range requests and tags
     let file_info = client
         .cid_info(CidInfoRequest { cid: cid.clone() })
         .await
@@ -748,6 +704,11 @@ async fn cid_content(
         .into_inner()
         .file
         .unwrap();
+
+    // check file visibility using tags
+    if let Err(e) = check_file_visibility(&file_info.tags, authenticated) {
+        return e;
+    }
 
     // check for range header
     let range_request = headers
@@ -843,18 +804,21 @@ async fn cid_thumbnail_medium(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
     headers: HeaderMap,
+    Query(query): Query<SignatureQuery>,
 ) -> impl IntoResponse {
     let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
         Err(e) => return e.into_response(),
     };
 
-    let authenticated = check_auth(&state, &headers);
-    let mut client = state.client;
+    // check auth via signature or header
+    let authenticated = if let Some(sig) = &query.sig {
+        validate_signature(&state.jwt_secret, sig).is_ok()
+    } else {
+        check_auth(&state, &headers)
+    };
 
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
     let file_info = client
         .cid_info(CidInfoRequest { cid: cid.clone() })
@@ -863,6 +827,10 @@ async fn cid_thumbnail_medium(
         .into_inner()
         .file
         .unwrap();
+
+    if let Err(e) = check_file_visibility(&file_info.tags, authenticated) {
+        return e;
+    }
 
     let thumbs = match extract_thumbnails(&file_info) {
         Ok(thumbs) => thumbs,
@@ -891,18 +859,21 @@ async fn cid_thumbnail_small(
     State(state): State<AState>,
     Path(encoded_cid): Path<String>,
     headers: HeaderMap,
+    Query(query): Query<SignatureQuery>,
 ) -> impl IntoResponse {
     let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
         Err(e) => return e.into_response(),
     };
 
-    let authenticated = check_auth(&state, &headers);
-    let mut client = state.client;
+    // check auth via signature or header
+    let authenticated = if let Some(sig) = &query.sig {
+        validate_signature(&state.jwt_secret, sig).is_ok()
+    } else {
+        check_auth(&state, &headers)
+    };
 
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
     let file_info = client
         .cid_info(CidInfoRequest { cid: cid.clone() })
@@ -911,6 +882,10 @@ async fn cid_thumbnail_small(
         .into_inner()
         .file
         .unwrap();
+
+    if let Err(e) = check_file_visibility(&file_info.tags, authenticated) {
+        return e;
+    }
 
     let thumbs = match extract_thumbnails(&file_info) {
         Ok(thumbs) => thumbs,
@@ -939,19 +914,21 @@ async fn cid_thumbnail(
     State(state): State<AState>,
     Path((encoded_cid, long_edge)): Path<(String, u32)>,
     headers: HeaderMap,
+    Query(query): Query<SignatureQuery>,
 ) -> impl IntoResponse {
     let cid = match decode_cid_param(&encoded_cid) {
         Ok(cid) => cid,
         Err(e) => return e.into_response(),
     };
 
-    let authenticated = check_auth(&state, &headers);
+    // check auth via signature or header
+    let authenticated = if let Some(sig) = &query.sig {
+        validate_signature(&state.jwt_secret, sig).is_ok()
+    } else {
+        check_auth(&state, &headers)
+    };
 
-    let mut client = state.client;
-
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
     let file_info = client
         .cid_info(CidInfoRequest { cid: cid.clone() })
@@ -960,6 +937,10 @@ async fn cid_thumbnail(
         .into_inner()
         .file
         .unwrap();
+
+    if let Err(e) = check_file_visibility(&file_info.tags, authenticated) {
+        return e;
+    }
 
     let thumbs = match extract_thumbnails(&file_info) {
         Ok(thumbs) => thumbs,
@@ -1024,20 +1005,62 @@ fn decode_cid_param(encoded_cid: &str) -> Result<Vec<u8>, impl IntoResponse> {
 
 fn file_info_to_response(
     info: hooya::proto::File,
-) -> proxy_response::CidInfoResponse {
+    state: &AState,
+    user_claims: Option<&ClaimData>,
+    signature: Option<&str>,
+) -> (proxy_response::CidInfoResponse, Option<String>) {
     let cid = hooya::cid::encode(info.cid);
     let size = info.size;
     let mimetype = info.mimetype;
     let ext_file = info.ext_file.map(|f| f.into());
     let processing_status = info.processing_status;
+    let tags = info.tags.clone();
 
-    proxy_response::CidInfoResponse {
+    // check if file is private
+    let is_private = tags.iter().any(|tag| {
+        tag.namespace == "visibility" && tag.descriptor == "private"
+    });
+
+    // generate signature for private files when needed
+    let (final_signature, generated_signature) = if is_private {
+        if let Some(sig) = signature {
+            (Some(sig.to_string()), None)
+        } else if let Some(claims) = user_claims {
+            // generate signature
+            let now = chrono::Utc::now().timestamp() as usize;
+            let signature_claims = SignatureClaimData {
+                user_id: claims.user_id,
+                exp: now + 600, // 10 minutes
+                iat: now,
+            };
+
+            if let Ok(new_sig) = encode(
+                &Header::default(),
+                &signature_claims,
+                &EncodingKey::from_secret(&state.jwt_secret),
+            ) {
+                (Some(new_sig.clone()), Some(new_sig))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    let response = proxy_response::CidInfoResponse {
         cid,
         size,
         mimetype,
         ext_file,
         processing_status,
-    }
+        tags,
+        signature: final_signature,
+    };
+
+    (response, generated_signature)
 }
 
 fn extract_thumbnails(
@@ -1125,11 +1148,7 @@ async fn cid_tags(
 
     let authenticated = check_auth(&state, &headers);
 
-    let mut client = state.client;
-
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
     let tags: Vec<Tag> = client
         .tags(TagsRequest { cid })
@@ -1137,6 +1156,10 @@ async fn cid_tags(
         .unwrap()
         .into_inner()
         .tags;
+
+    if let Err(e) = check_file_visibility(&tags, authenticated) {
+        return e;
+    }
 
     axum::Json(tags).into_response()
 }
@@ -1151,13 +1174,10 @@ async fn cid_info(
         Err(e) => return e.into_response(),
     };
 
-    let authenticated = check_auth(&state, &headers);
+    let user_claims = require_auth(&state, headers).ok();
+    let authenticated = user_claims.is_some();
 
-    let mut client = state.client;
-
-    if let Err(e) = check_file_access(&mut client, &cid, authenticated).await {
-        return e;
-    }
+    let mut client = state.client.clone();
 
     let info: Option<hooya::proto::File> = client
         .cid_info(CidInfoRequest { cid })
@@ -1174,7 +1194,12 @@ async fn cid_info(
         }
     };
 
-    let body = file_info_to_response(info);
+    if let Err(e) = check_file_visibility(&info.tags, authenticated) {
+        return e;
+    }
+
+    let (body, _) =
+        file_info_to_response(info, &state, user_claims.as_ref(), None);
 
     axum::Json(body).into_response()
 }
@@ -1183,7 +1208,7 @@ async fn local_file_page(
     State(state): State<AState>,
     Path(page_token): Path<String>,
 ) -> impl IntoResponse {
-    let mut client = state.client;
+    let mut client = state.client.clone();
 
     let local_file_page_resp = client
         .local_file_page(LocalFilePageRequest {
@@ -1215,11 +1240,12 @@ async fn all_files(
     Path(page_token): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let authenticated = check_auth(&state, &headers);
+    let user_claims = require_auth(&state, headers).ok();
+    let authenticated = user_claims.is_some();
     let visibility_filter =
         hooya::visibility::VisibilityFilter::for_user(authenticated, false);
 
-    let mut client = state.client;
+    let mut client = state.client.clone();
     let all_files_resp = client
         .all_files(AllFilesRequest {
             sort_order: 0,
@@ -1234,11 +1260,26 @@ async fn all_files(
 
     let final_page_token = all_files_resp.final_page_token;
     let next_page_token = all_files_resp.next_page_token;
-    let files = all_files_resp
-        .files
-        .into_iter()
-        .map(file_info_to_response)
-        .collect();
+
+    // process files and reuse signatures when possible
+    let mut files = Vec::new();
+    let mut signature: Option<String> = None;
+
+    for file in all_files_resp.files {
+        let (response, generated_sig) = file_info_to_response(
+            file,
+            &state,
+            user_claims.as_ref(),
+            signature.as_deref(),
+        );
+
+        // reuse generated signature for subsequent files
+        if let Some(new_sig) = generated_sig {
+            signature = Some(new_sig);
+        }
+
+        files.push(response);
+    }
 
     let body = proxy_response::AllFilesResponse {
         files,
@@ -1257,7 +1298,7 @@ async fn all_tags(
     let authenticated = check_auth(&state, &headers);
     let visibility_filter =
         hooya::visibility::VisibilityFilter::for_user(authenticated, true);
-    let mut client = state.client;
+    let mut client = state.client.clone();
 
     let all_tags_resp = client
         .all_tags(AllTagsRequest {
@@ -1305,7 +1346,7 @@ async fn suggest_tag(
     let authenticated = check_auth(&state, &headers);
     let visibility_filter =
         hooya::visibility::VisibilityFilter::for_user(authenticated, true);
-    let mut client = state.client;
+    let mut client = state.client.clone();
 
     let query = SuggestTagRequest {
         tag_query: vec![],
@@ -1326,7 +1367,7 @@ async fn suggest_tag_with_query(
     let authenticated = check_auth(&state, &headers);
     let visibility_filter =
         hooya::visibility::VisibilityFilter::for_user(authenticated, true);
-    let mut client = state.client;
+    let mut client = state.client.clone();
 
     let tags: Vec<&str> = query.split(',').collect();
 
@@ -1393,10 +1434,11 @@ async fn search_files(
     Path((query, page_token)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let authenticated = check_auth(&state, &headers);
+    let user_claims = require_auth(&state, headers).ok();
+    let authenticated = user_claims.is_some();
     let visibility_filter =
         hooya::visibility::VisibilityFilter::for_user(authenticated, true);
-    let mut client = state.client;
+    let mut client = state.client.clone();
 
     let tag_query = query
         .split(',')
@@ -1437,11 +1479,26 @@ async fn search_files(
 
     let final_page_token = search_files_resp.final_page_token;
     let next_page_token = search_files_resp.next_page_token;
-    let files = search_files_resp
-        .files
-        .into_iter()
-        .map(file_info_to_response)
-        .collect();
+
+    // process files and reuse signatures when possible
+    let mut files = Vec::new();
+    let mut signature: Option<String> = None;
+
+    for file in search_files_resp.files {
+        let (response, generated_sig) = file_info_to_response(
+            file,
+            &state,
+            user_claims.as_ref(),
+            signature.as_deref(),
+        );
+
+        // reuse generated signature for subsequent files
+        if let Some(new_sig) = generated_sig {
+            signature = Some(new_sig);
+        }
+
+        files.push(response);
+    }
 
     let body = proxy_response::AllFilesResponse {
         files,
@@ -1866,6 +1923,8 @@ mod proxy_response {
         pub mimetype: Option<String>,
         pub ext_file: Option<ExtFile>,
         pub processing_status: i32,
+        pub tags: Vec<hooya::proto::Tag>,
+        pub signature: Option<String>,
     }
 
     #[derive(Serialize, Deserialize)]

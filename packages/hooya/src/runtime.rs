@@ -109,6 +109,7 @@ impl Runtime {
             mimetype,
             processing_status: ProcessingStatus::ProcessingStarted as i32,
             ext_file: None, // not processed yet sooo
+            tags: vec![],   // no tags yet
         })
     }
 
@@ -235,6 +236,16 @@ impl Runtime {
 
         // The reason for this cute misdirection is that indexed (ie local)
         // File may not always map 1-to-1 with the concept of Files on the network
+        // fetch tags for this file
+        let tag_rows = self.db.file_tags(file_row.cid.clone()).await?;
+        let tags = tag_rows
+            .into_iter()
+            .map(|tag_row| Tag {
+                namespace: tag_row.namespace,
+                descriptor: tag_row.descriptor,
+            })
+            .collect();
+
         let file = File {
             cid: file_row.cid.clone(),
             mimetype: file_row.mimetype,
@@ -242,6 +253,7 @@ impl Runtime {
             processing_status: self.get_processing_status_sync(&file_row.cid)
                 as i32,
             ext_file,
+            tags,
         };
 
         Ok(file)
@@ -366,6 +378,7 @@ impl Runtime {
                 processing_status: self.get_processing_status_sync(&f.cid)
                     as i32,
                 ext_file: None, // TODO INNER JOIN
+                tags: vec![],   // tags not fetched in this context
             })
             .collect();
 
@@ -618,6 +631,7 @@ impl Runtime {
                 processing_status: self.get_processing_status_sync(&f.cid)
                     as i32,
                 ext_file: None, // TODO INNER JOIN
+                tags: vec![],   // tags not fetched in this context
             })
             .collect();
 
