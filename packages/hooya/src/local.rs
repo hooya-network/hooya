@@ -575,13 +575,12 @@ impl Db {
                 LEFT JOIN Videos v ON f.Cid = v.Cid
                 INNER JOIN TagMap tm ON f.Cid = tm.FileCid
                 INNER JOIN Tags t ON t.Id = tm.TagId
-                WHERE {}
+                WHERE {where_clause}
                 GROUP BY f.Cid
-                HAVING COUNT(DISTINCT t.Id) = {}
-                {}
+                HAVING COUNT(DISTINCT t.Id) = {distinct_tag_count}
+                {order_clause}
                 LIMIT ? OFFSET ?
-            "#,
-                where_clause, distinct_tag_count, order_clause
+            "#
             );
 
             count_sql_query = format!(
@@ -592,9 +591,8 @@ impl Db {
                 LEFT JOIN Videos v ON f.Cid = v.Cid
                 INNER JOIN TagMap tm ON f.Cid = tm.FileCid
                 INNER JOIN Tags t ON t.Id = tm.TagId
-                WHERE {}
-            "#,
-                where_clause
+                WHERE {where_clause}
+            "#
             );
 
             // Bind namespace:descriptor parameters defined earlier
@@ -654,15 +652,13 @@ impl Db {
                 FROM Files f
                 LEFT JOIN Images i ON f.Cid = i.Cid
                 LEFT JOIN Videos v ON f.Cid = v.Cid
-                {}
-                {}
+                {visibility_where}
+                {order_clause}
                 LIMIT ? OFFSET ?
-            "#,
-                visibility_where, order_clause
+            "#
             );
             count_sql_query = format!(
-                r#"SELECT COUNT(*) as total FROM Files f {}"#,
-                visibility_where
+                r#"SELECT COUNT(*) as total FROM Files f {visibility_where}"#
             );
 
             let query = sqlx::query(&sql_query).bind(page_size).bind(offset);
@@ -764,7 +760,7 @@ impl Db {
 
         let total_count: u32 = total_count_row.try_get("total_count")?;
         let final_page_token = if page_size > 0 {
-            (total_count + page_size - 1) / page_size
+            total_count.div_ceil(page_size)
         } else {
             1
         };
@@ -799,12 +795,11 @@ impl Db {
                 FROM Tags t
                 INNER JOIN TagMap tm ON t.Id = tm.TagId
                 INNER JOIN Files f ON f.Cid = tm.FileCid
-                {}
+                {visibility_where}
                 GROUP BY t.Id
-                {}
+                {order_clause}
                 LIMIT ? OFFSET ?
-            "#,
-            visibility_where, order_clause
+            "#
         );
 
         let prepared_statement = sqlx::query(&query)
@@ -893,12 +888,11 @@ impl Db {
             SELECT Id, Namespace, Descriptor, COUNT(*) AS Associations FROM Tags t
             INNER JOIN TagMap tm ON t.Id = tm.TagId
             INNER JOIN Files f ON tm.FileCid = f.Cid
-            {}
+            {visibility_where}
             GROUP BY t.Id
             ORDER BY Associations DESC
             LIMIT 10
-            "#,
-            visibility_where
+            "#
         );
 
         let ret = sqlx::query(&query)
@@ -930,7 +924,7 @@ impl Db {
 
         let mut where_clauses = vec![];
 
-        let like_clause = format!("{}%", begins_with);
+        let like_clause = format!("{begins_with}%");
         params_bind.push(like_clause);
         where_clauses.push("t.Namespace LIKE ?".to_string());
 
@@ -947,12 +941,11 @@ impl Db {
 
             let subquery = format!(
                 r#"
-                {} EXISTS (
+                {negation_clause} EXISTS (
                     SELECT 1 FROM TagMap tm
                     INNER JOIN Tags tg ON tm.TagId = tg.Id
                     WHERE tm.FileCid = f.Cid AND tg.Namespace = ? AND tg.Descriptor = ?
                 )"#,
-                negation_clause,
             );
             where_clauses.push(subquery);
         }
@@ -981,10 +974,7 @@ impl Db {
         let having_clause = if !tag_constraints.is_empty() {
             let non_negated_count =
                 tag_constraints.iter().filter(|tc| !tc.negated).count();
-            format!(
-                "HAVING COUNT(DISTINCT tm.FileCid) >= {}",
-                non_negated_count
-            )
+            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {non_negated_count}")
         } else {
             String::new()
         };
@@ -1045,7 +1035,7 @@ impl Db {
 
         let mut where_clauses = vec![];
 
-        let like_clause = format!("{}%", begins_with);
+        let like_clause = format!("{begins_with}%");
         params_bind.push(like_clause);
         where_clauses.push("t.Descriptor LIKE ?".to_string());
 
@@ -1067,12 +1057,11 @@ impl Db {
 
             let subquery = format!(
                 r#"
-                {} EXISTS (
+                {negation_clause} EXISTS (
                     SELECT 1 FROM TagMap tm
                     INNER JOIN Tags tg ON tm.TagId = tg.Id
                     WHERE tm.FileCid = f.Cid AND tg.Namespace = ? AND tg.Descriptor = ?
                 )"#,
-                negation_clause,
             );
             where_clauses.push(subquery);
         }
@@ -1101,10 +1090,7 @@ impl Db {
         let having_clause = if !tag_constraints.is_empty() {
             let non_negated_count =
                 tag_constraints.iter().filter(|tc| !tc.negated).count();
-            format!(
-                "HAVING COUNT(DISTINCT tm.FileCid) >= {}",
-                non_negated_count
-            )
+            format!("HAVING COUNT(DISTINCT tm.FileCid) >= {non_negated_count}")
         } else {
             String::new()
         };

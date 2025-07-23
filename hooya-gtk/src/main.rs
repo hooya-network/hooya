@@ -340,7 +340,7 @@ fn build_browse_window(
                     let res = pb_loader.close();
                     if let Err(e) = res {
                         m_grid.remove(&img);
-                        println!("AERR {}", e)
+                        println!("AERR {e}")
                     }
                 }
                 DataEvent::ViewImage { file, tags, stream } => {
@@ -432,7 +432,7 @@ async fn build_file_view_window(
         for d in descriptors {
             let d_box = gtk::Box::builder()
                 .css_classes([
-                    &format!("namespace-{}", namespace),
+                    &format!("namespace-{namespace}"),
                     "descriptor-box",
                 ])
                 .halign(Align::Start)
@@ -612,7 +612,7 @@ async fn build_file_view_window(
     let res = pb_loader.close();
     if let Err(e) = res {
         window.close();
-        println!("AERR {}", e)
+        println!("AERR {e}")
     }
 }
 
@@ -785,11 +785,11 @@ fn human_readable_size(size: i64) -> String {
         let dividend: i64 = 1 << (10 * power);
         let div_res = size as f64 / dividend as f64;
         if div_res.floor() >= 1.0 {
-            return format!("{:.2}{}", div_res, label);
+            return format!("{div_res:.2}{label}");
         }
     }
 
-    format!("{}B", size)
+    format!("{size}B")
 }
 
 fn closest_thumbnail(thumbnails: &[Thumbnail], long_edge: i64) -> &Thumbnail {

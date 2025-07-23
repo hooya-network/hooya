@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // for ease of startup
     if let Some(new_password) = config.ensure_password_exists()? {
-        println!("generated operator password: {}", new_password);
+        println!("generated operator password: {new_password}");
     }
 
     // configure CORS
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .allow_credentials(true),
             Err(_) => {
-                eprintln!("invalid CORS origins format: {}", cors_origins);
+                eprintln!("invalid CORS origins format: {cors_origins}");
                 std::process::exit(1);
             }
         }
@@ -489,13 +489,10 @@ fn parse_tag_form_data(body: &str) -> Vec<TagData> {
                     {
                         if let Ok(index) = index_str.parse::<usize>() {
                             if let Some(field) = field_part.strip_suffix(']') {
-                                tags_map
-                                    .entry(index)
-                                    .or_insert_with(HashMap::new)
-                                    .insert(
-                                        field.to_string(),
-                                        value.to_string(),
-                                    );
+                                tags_map.entry(index).or_default().insert(
+                                    field.to_string(),
+                                    value.to_string(),
+                                );
                             }
                         }
                     }
@@ -531,7 +528,7 @@ async fn tag_cid(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let cid = match decode_cid_param(&encoded_cid) {
@@ -572,7 +569,7 @@ async fn untag_cid(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let cid = match decode_cid_param(&encoded_cid) {
@@ -612,7 +609,7 @@ async fn forget_file(
     Path(encoded_cid): Path<String>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let cid = match decode_cid_param(&encoded_cid) {
@@ -787,12 +784,9 @@ async fn cid_content(
         if let Some(save_extension) = save_extension {
             response_headers.append(
                 axum::http::header::CONTENT_DISPOSITION,
-                format!(
-                    "inline; filename=\"{}.{}\"",
-                    encoded_cid, save_extension
-                )
-                .parse()
-                .unwrap(),
+                format!("inline; filename=\"{encoded_cid}.{save_extension}\"")
+                    .parse()
+                    .unwrap(),
             );
         }
     }
@@ -850,7 +844,7 @@ async fn cid_thumbnail_medium(
         create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
     let headers =
-        create_thumbnail_headers(&thumbnail, &encoded_cid, Some(long_edge));
+        create_thumbnail_headers(thumbnail, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -905,7 +899,7 @@ async fn cid_thumbnail_small(
         create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
     let headers =
-        create_thumbnail_headers(&thumbnail, &encoded_cid, Some(long_edge));
+        create_thumbnail_headers(thumbnail, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -967,7 +961,7 @@ async fn cid_thumbnail(
         create_thumbnail_stream(&mut client, cid, long_edge).await;
     let body = axum::body::Body::from_stream(chunk_stream);
     let headers =
-        create_thumbnail_headers(&thumb, &encoded_cid, Some(long_edge));
+        create_thumbnail_headers(thumb, &encoded_cid, Some(long_edge));
 
     (headers, body).into_response()
 }
@@ -1103,18 +1097,16 @@ fn create_thumbnail_headers(
     let save_extension = mimetype_extension(&thumbnail.mimetype);
     let filename = match (save_extension, long_edge) {
         (Some(ext), Some(edge)) => {
-            format!("{}_thumb{}.{}", encoded_cid, edge, ext)
+            format!("{encoded_cid}_thumb{edge}.{ext}")
         }
-        (Some(ext), None) => format!("{}_thumb.{}", encoded_cid, ext),
-        (None, Some(edge)) => format!("{}_thumb{}", encoded_cid, edge),
-        (None, None) => format!("{}_thumb", encoded_cid),
+        (Some(ext), None) => format!("{encoded_cid}_thumb.{ext}"),
+        (None, Some(edge)) => format!("{encoded_cid}_thumb{edge}"),
+        (None, None) => format!("{encoded_cid}_thumb"),
     };
 
     headers.append(
         axum::http::header::CONTENT_DISPOSITION,
-        format!("inline; filename=\"{}\"", filename)
-            .parse()
-            .unwrap(),
+        format!("inline; filename=\"{filename}\"").parse().unwrap(),
     );
 
     headers
@@ -1528,7 +1520,7 @@ async fn start_upload(
     Json(payload): Json<StartUploadRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = StartUploadSessionRequest {
@@ -1548,7 +1540,7 @@ async fn start_upload(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to start upload: {}", e),
+            format!("Failed to start upload: {e}"),
         )
             .into_response(),
     }
@@ -1561,7 +1553,7 @@ async fn upload_chunk(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = UploadChunkRequest {
@@ -1583,7 +1575,7 @@ async fn upload_chunk(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to upload chunk: {}", e),
+            format!("Failed to upload chunk: {e}"),
         )
             .into_response(),
     }
@@ -1596,7 +1588,7 @@ async fn complete_upload(
     Json(payload): Json<proxy_request::CompleteUploadRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let tags: Vec<Tag> = payload
@@ -1629,7 +1621,7 @@ async fn complete_upload(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to complete upload: {}", e),
+            format!("Failed to complete upload: {e}"),
         )
             .into_response(),
     }
@@ -1641,7 +1633,7 @@ async fn upload_status(
     Path(upload_id): Path<String>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = GetUploadStatusRequest { upload_id };
@@ -1660,7 +1652,7 @@ async fn upload_status(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get upload status: {}", e),
+            format!("Failed to get upload status: {e}"),
         )
             .into_response(),
     }
@@ -1713,7 +1705,7 @@ async fn instance_events(
                                         event.mimetype.as_deref().unwrap_or("")
                                     )
                                 }
-                                _ => format!("{{\"cid\":\"{}\"}}", cid_str)
+                                _ => format!("{{\"cid\":\"{cid_str}\"}}")
                             };
 
                             let sse_event = Event::default()
@@ -1792,7 +1784,7 @@ async fn system_info(State(state): State<AState>) -> impl IntoResponse {
         }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get system info: {}", err),
+            format!("Failed to get system info: {err}"),
         )
             .into_response(),
     }
@@ -1804,7 +1796,7 @@ async fn send_chat_message(
     Json(payload): Json<proxy_request::SendChatMessageRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = SendChatMessageRequest {
@@ -1822,7 +1814,7 @@ async fn send_chat_message(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to send chat message: {}", e),
+            format!("Failed to send chat message: {e}"),
         )
             .into_response(),
     }
@@ -1833,7 +1825,7 @@ async fn get_chat_channels(
     State(state): State<AState>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = GetChatChannelsRequest {};
@@ -1850,7 +1842,7 @@ async fn get_chat_channels(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get chat channels: {}", e),
+            format!("Failed to get chat channels: {e}"),
         )
             .into_response(),
     }
@@ -1862,7 +1854,7 @@ async fn get_chat_history(
     Path((channel, page_token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, headers) {
-        return e.into_response();
+        return e;
     }
 
     let request = GetChatHistoryRequest {
@@ -1887,7 +1879,7 @@ async fn get_chat_history(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get chat history: {}", e),
+            format!("Failed to get chat history: {e}"),
         )
             .into_response(),
     }

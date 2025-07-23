@@ -205,7 +205,7 @@ impl AddrBook {
                 info.connection_attempts < 3
                     || info
                         .last_connection_attempt
-                        .map_or(true, |last| last < hour_ago)
+                        .is_none_or(|last| last < hour_ago)
             })
             .map(|(peer_id, info)| (*peer_id, info.multiaddr.clone()))
             .collect()

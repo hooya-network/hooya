@@ -1033,7 +1033,7 @@ impl Runtime {
 
         // send message to mesh network
         if let Err(e) = self.mesh_tx.send(msg).await {
-            eprintln!("Failed to send message to mesh network: {}", e);
+            eprintln!("Failed to send message to mesh network: {e}");
             return Err(anyhow::anyhow!(
                 "Failed to send message to mesh network: {}",
                 e
@@ -1044,7 +1044,7 @@ impl Runtime {
         if let Err(e) =
             self.log_chat_message(&channel, &node_id, &content).await
         {
-            eprintln!("Failed to log chat message locally: {}", e);
+            eprintln!("Failed to log chat message locally: {e}");
             // don't return error as message was sent successfully
         }
 

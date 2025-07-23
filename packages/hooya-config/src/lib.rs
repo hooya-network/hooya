@@ -197,28 +197,24 @@ pub struct NetworkingConfig {
     pub discovery: DiscoveryConfig,
 }
 
+type Discv5Addresses = (
+    Option<(std::net::Ipv4Addr, u16)>,
+    Option<(std::net::Ipv6Addr, u16)>,
+);
+
 impl NetworkingConfig {
-    pub fn get_discv5_addresses(
-        &self,
-    ) -> Result<
-        (
-            Option<(std::net::Ipv4Addr, u16)>,
-            Option<(std::net::Ipv6Addr, u16)>,
-        ),
-        String,
-    > {
+    pub fn get_discv5_addresses(&self) -> Result<Discv5Addresses, String> {
         if self.discv5_listen_addresses.len() > 2 {
-            return Err(format!("discv5_listen_addresses"));
+            return Err("discv5_listen_addresses".to_string());
         }
 
         let mut ipv4_config: Option<(std::net::Ipv4Addr, u16)> = None;
         let mut ipv6_config: Option<(std::net::Ipv6Addr, u16)> = None;
 
         for addr_str in &self.discv5_listen_addresses {
-            let multiaddr: libp2p::Multiaddr =
-                addr_str.parse().map_err(|e| {
-                    format!("Invalid multiaddr '{}': {}", addr_str, e)
-                })?;
+            let multiaddr: libp2p::Multiaddr = addr_str
+                .parse()
+                .map_err(|e| format!("Invalid multiaddr '{addr_str}': {e}"))?;
 
             let mut ip: Option<std::net::IpAddr> = None;
             let mut port: Option<u16> = None;
@@ -247,8 +243,7 @@ impl NetworkingConfig {
                 }
                 _ => {
                     return Err(format!(
-                        "Invalid discv5 address format: {}",
-                        addr_str
+                        "Invalid discv5 address format: {addr_str}"
                     ))
                 }
             }

@@ -49,7 +49,7 @@ impl ChatMessageHandler {
                 };
 
                 if let Err(e) = instance_events.send(instance_event) {
-                    eprintln!("error broadcasting instance event: {}", e);
+                    eprintln!("error broadcasting instance event: {e}");
                 }
             }
         });

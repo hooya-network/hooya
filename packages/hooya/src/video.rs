@@ -111,10 +111,7 @@ pub fn preview(
                 ]);
             }
         } else {
-            cmd.args([
-                "-vf",
-                &format!("scale={w}:{h}", w = scaled_width, h = scaled_height),
-            ]);
+            cmd.args(["-vf", &format!("scale={scaled_width}:{scaled_height}")]);
         }
 
         cmd.arg("-c:v").arg(video_codec);

@@ -52,10 +52,12 @@ struct UploadSession {
     id: String,
     temp_file: File,
     expected_size: Option<u64>,
+    #[allow(dead_code)]
     mimetype: Option<String>,
     bytes_received: u64,
     next_expected_chunk: String,
     chunk_size: u32,
+    #[allow(dead_code)]
     started_at: Instant,
 }
 
@@ -432,8 +434,8 @@ impl Control for IControl {
                 Ok(Response::new(reply))
             }
             Err(e) => {
-                eprintln!("Error forgetting file: {:?}", e);
-                Err(Status::internal(format!("Failed to forget file: {}", e)))
+                eprintln!("Error forgetting file: {e:?}");
+                Err(Status::internal(format!("Failed to forget file: {e}")))
             }
         }
     }
@@ -547,7 +549,7 @@ impl Control for IControl {
         let chunk_size = std::cmp::min(req.chunk_size, MAX_CHUNK_SIZE);
 
         // temp file for upload sessions
-        let tmp_name = format!("{}_session", upload_id);
+        let tmp_name = format!("{upload_id}_session");
         let tmp_path = self.runtime.filestore_path.join("tmp").join(&tmp_name);
         let temp_file = File::create(&tmp_path).await?;
 
@@ -881,8 +883,7 @@ impl Control for IControl {
 
         if let Err(e) = self.runtime.send_outgoing_message(outgoing_msg).await {
             return Err(Status::internal(format!(
-                "Failed to send message: {}",
-                e
+                "Failed to send message: {e}"
             )));
         }
 
@@ -931,8 +932,7 @@ impl Control for IControl {
                 Ok(Response::new(reply))
             }
             Err(e) => Err(Status::internal(format!(
-                "Failed to get chat history: {}",
-                e
+                "Failed to get chat history: {e}"
             ))),
         }
     }
@@ -947,8 +947,7 @@ impl Control for IControl {
                 Ok(Response::new(reply))
             }
             Err(e) => Err(Status::internal(format!(
-                "Failed to get chat channels: {}",
-                e
+                "Failed to get chat channels: {e}"
             ))),
         }
     }
@@ -1055,16 +1054,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let filestore_path_clone = filestore_path.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_mesh_network(
+        if let Err(e) = run_mesh_network(MeshNetworkConfig {
             node_id,
             networking_config,
             mesh_rx,
-            instance_events_clone,
-            chatroom_arc,
+            instance_events: instance_events_clone,
+            chatroom: chatroom_arc,
             discv5_key,
             libp2p_key,
-            filestore_path_clone,
-        )
+            filestore_path: filestore_path_clone,
+        })
         .await
         {
             event!(Level::ERROR, %e, "mesh network failed");
@@ -1097,23 +1096,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_mesh_network(
+struct MeshNetworkConfig {
     node_id: String,
     networking_config: hooya_config::NetworkingConfig,
     mesh_rx: tokio::sync::mpsc::Receiver<hooya::mesh_network::OutgoingMessage>,
-    instance_events: tokio::sync::broadcast::Sender<
-        hooya::runtime::InstanceEvent,
-    >,
+    instance_events:
+        tokio::sync::broadcast::Sender<hooya::runtime::InstanceEvent>,
     chatroom: std::sync::Arc<hooya::chatroom::Chatroom>,
     discv5_key: discv5::enr::CombinedKey,
     libp2p_key: libp2p::identity::Keypair,
     filestore_path: std::path::PathBuf,
-) -> anyhow::Result<()> {
+}
+
+async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
     // get discv5 configuration from networking config
-    let (ipv4_config, ipv6_config) =
-        networking_config.get_discv5_addresses().map_err(|e| {
-            anyhow::anyhow!("Invalid discv5 configuration: {}", e)
-        })?;
+    let (ipv4_config, ipv6_config) = config
+        .networking_config
+        .get_discv5_addresses()
+        .map_err(|e| anyhow::anyhow!("Invalid discv5 configuration: {}", e))?;
 
     // create appropriate ListenConfig based on available addresses
     let listen_config = discv5::ListenConfig::from_two_sockets(
@@ -1134,10 +1134,10 @@ async fn run_mesh_network(
     }
 
     let enr = enr_builder
-        .build(&discv5_key)
+        .build(&config.discv5_key)
         .map_err(|e| anyhow::anyhow!("Failed to build ENR: {}", e))?;
 
-    let mut discv5 = discv5::Discv5::new(enr, discv5_key, discv5_config)
+    let mut discv5 = discv5::Discv5::new(enr, config.discv5_key, discv5_config)
         .map_err(|e| anyhow::anyhow!("Failed to create discv5: {}", e))?;
     discv5
         .start()
@@ -1153,7 +1153,7 @@ async fn run_mesh_network(
         })?;
 
     let gossipsub = GossipsubBehavior::new(
-        MessageAuthenticity::Signed(libp2p_key.clone()),
+        MessageAuthenticity::Signed(config.libp2p_key.clone()),
         gossipsub_config,
     )
     .map_err(|e| anyhow::anyhow!("Failed to create gossipsub: {}", e))?;
@@ -1161,14 +1161,14 @@ async fn run_mesh_network(
     // create other behaviors
     let identify = IdentifyBehavior::new(identify::Config::new(
         "/hooya/mesh/1.0.0".to_string(),
-        libp2p_key.public(),
+        config.libp2p_key.public(),
     ));
 
     let ping = PingBehavior::new(ping::Config::default());
 
     let mdns = MdnsBehavior::new(
         mdns::Config::default(),
-        libp2p_key.public().to_peer_id(),
+        config.libp2p_key.public().to_peer_id(),
     )
     .map_err(|e| anyhow::anyhow!("Failed to create mdns: {}", e))?;
 
@@ -1181,7 +1181,7 @@ async fn run_mesh_network(
     };
 
     // create swarm
-    let mut swarm = SwarmBuilder::with_existing_identity(libp2p_key)
+    let mut swarm = SwarmBuilder::with_existing_identity(config.libp2p_key)
         .with_tokio()
         .with_tcp(
             libp2p::tcp::Config::default(),
@@ -1199,7 +1199,7 @@ async fn run_mesh_network(
         .build();
 
     // listen on configured addresses
-    for addr_str in &networking_config.listen_addresses {
+    for addr_str in &config.networking_config.listen_addresses {
         let listen_addr: Multiaddr = addr_str.parse().map_err(|e| {
             anyhow::anyhow!("Invalid listen address '{}': {}", addr_str, e)
         })?;
@@ -1209,12 +1209,14 @@ async fn run_mesh_network(
     }
 
     // create chat handler
-    let chat_handler =
-        hooya::chat_handler::ChatMessageHandler::new(chatroom, instance_events);
+    let chat_handler = hooya::chat_handler::ChatMessageHandler::new(
+        config.chatroom,
+        config.instance_events,
+    );
 
     // create and load addr_book
     let runtime_config =
-        hooya_config::RuntimeConfig::new(filestore_path.clone());
+        hooya_config::RuntimeConfig::new(config.filestore_path.clone());
     let addr_book_path = runtime_config.addrbook_path();
     let flush_interval = std::time::Duration::from_secs(300); // 5 minutes
     let mut addr_book =
@@ -1225,12 +1227,12 @@ async fn run_mesh_network(
 
     // create mesh network
     let mut mesh_network = hooya::mesh_network::MeshNetwork::new(
-        node_id,
-        networking_config,
+        config.node_id,
+        config.networking_config,
         addr_book,
     );
     mesh_network.add_handler(std::sync::Arc::new(chat_handler));
 
     // run the main event loop
-    mesh_network.run(discv5, swarm, mesh_rx).await
+    mesh_network.run(discv5, swarm, config.mesh_rx).await
 }
