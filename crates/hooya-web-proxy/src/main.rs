@@ -243,6 +243,11 @@ struct SignatureQuery {
     sig: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AuthQuery {
+    auth: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ClaimData {
     user_id: u64,
@@ -452,6 +457,40 @@ fn require_auth(
 
     let token_data = decode::<ClaimData>(
         token,
+        &DecodingKey::from_secret(&state.jwt_secret),
+        &Validation::new(Algorithm::HS256),
+    )
+    .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid token").into_response())?;
+
+    if token_data.claims.exp < chrono::Utc::now().timestamp() as usize {
+        return Err((StatusCode::UNAUTHORIZED, "Expired token").into_response());
+    }
+
+    Ok(token_data.claims)
+}
+
+fn require_auth_with_query(
+    state: &AState,
+    headers: HeaderMap,
+    auth_token: Option<String>,
+) -> Result<ClaimData, axum::response::Response> {
+    // check query parameter first, then fall back to header
+    let token = if let Some(query_token) = auth_token {
+        query_token
+    } else {
+        headers
+            .get("Authorization")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .ok_or_else(|| {
+                (StatusCode::UNAUTHORIZED, "Authorization missing")
+                    .into_response()
+            })?
+            .to_string()
+    };
+
+    let token_data = decode::<ClaimData>(
+        &token,
         &DecodingKey::from_secret(&state.jwt_secret),
         &Validation::new(Algorithm::HS256),
     )
@@ -694,10 +733,14 @@ async fn cid_content(
     let mut client = state.client.clone();
 
     // get file info for range requests and tags
-    let file_info = client
-        .cid_info(CidInfoRequest { cid: cid.clone() })
-        .await
-        .unwrap()
+    let file_info =
+        match client.cid_info(CidInfoRequest { cid: cid.clone() }).await {
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, e.message().to_string())
+                    .into_response()
+            }
+            Ok(o) => o,
+        }
         .into_inner()
         .file
         .unwrap();
@@ -814,10 +857,14 @@ async fn cid_thumbnail_medium(
 
     let mut client = state.client.clone();
 
-    let file_info = client
-        .cid_info(CidInfoRequest { cid: cid.clone() })
-        .await
-        .unwrap()
+    let file_info =
+        match client.cid_info(CidInfoRequest { cid: cid.clone() }).await {
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, e.message().to_string())
+                    .into_response()
+            }
+            Ok(o) => o,
+        }
         .into_inner()
         .file
         .unwrap();
@@ -869,10 +916,14 @@ async fn cid_thumbnail_small(
 
     let mut client = state.client.clone();
 
-    let file_info = client
-        .cid_info(CidInfoRequest { cid: cid.clone() })
-        .await
-        .unwrap()
+    let file_info =
+        match client.cid_info(CidInfoRequest { cid: cid.clone() }).await {
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, e.message().to_string())
+                    .into_response()
+            }
+            Ok(o) => o,
+        }
         .into_inner()
         .file
         .unwrap();
@@ -924,10 +975,14 @@ async fn cid_thumbnail(
 
     let mut client = state.client.clone();
 
-    let file_info = client
-        .cid_info(CidInfoRequest { cid: cid.clone() })
-        .await
-        .unwrap()
+    let file_info =
+        match client.cid_info(CidInfoRequest { cid: cid.clone() }).await {
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, e.message().to_string())
+                    .into_response()
+            }
+            Ok(o) => o,
+        }
         .into_inner()
         .file
         .unwrap();
@@ -1171,10 +1226,14 @@ async fn cid_info(
 
     let mut client = state.client.clone();
 
-    let info: Option<hooya::proto::File> = client
-        .cid_info(CidInfoRequest { cid })
-        .await
-        .unwrap()
+    let info: Option<hooya::proto::File> =
+        match client.cid_info(CidInfoRequest { cid }).await {
+            Err(e) => {
+                return (StatusCode::NOT_FOUND, e.message().to_string())
+                    .into_response()
+            }
+            Ok(o) => o,
+        }
         .into_inner()
         .file;
 
@@ -1662,9 +1721,11 @@ async fn upload_status(
 async fn instance_events(
     headers: HeaderMap,
     State(state): State<AState>,
+    Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
-    // check if user is authenticated for chat events
-    let is_authenticated = require_auth(&state, headers).is_ok();
+    // check if user is authenticated for chat events (check query param first, then header)
+    let is_authenticated =
+        require_auth_with_query(&state, headers, query.auth).is_ok();
     // start grpc stream for all instance events
     let request = InstanceEventsRequest {};
 

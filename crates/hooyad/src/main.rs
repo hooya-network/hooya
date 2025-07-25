@@ -409,7 +409,7 @@ impl Control for IControl {
 
         // Check that the CID is actually indexed before tagging it
         runtime.indexed_file(req.cid.clone()).await.map_err(|_| {
-            Status::internal("CID is not indexed so it has no tags")
+            Status::not_found("CID is not indexed so it has no tags")
         })?;
 
         let tags = runtime
@@ -447,7 +447,7 @@ impl Control for IControl {
         let req = r.into_inner();
         let file =
             Some(self.runtime.indexed_file(req.cid).await.map_err(|_| {
-                Status::internal("CID is not indexed so it has no info")
+                Status::not_found("CID is not indexed so it has no info")
             })?);
 
         Ok(Response::new(CidInfoReply { file }))
