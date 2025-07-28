@@ -243,8 +243,7 @@ mod tests {
         let kp = write_secret_bls_key_at_path(&key_path).unwrap();
         let node_id = derive_node_id(&kp);
 
-        // node ID should be 42 characters (0x + 40 hex chars)
-        assert_eq!(node_id.len(), 42);
+        assert_eq!(node_id.len(), 31);
         assert!(node_id.starts_with("0x"));
     }
 

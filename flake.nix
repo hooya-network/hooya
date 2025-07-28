@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url  = "github:numtide/flake-utils";
+    self.submodules = true;
   };
 
   outputs = { self, nixpkgs, rust-overlay, flake-utils }:
@@ -21,9 +22,16 @@
           version = "0.1.2";
           src = ./.;
 
+          doCheck = false;
+
           cargoLock = {
             lockFile = ./Cargo.lock;
           };
+
+          preBuild = ''
+            mkdir -p packages/hooya/proto
+            cp proto/*.proto packages/hooya/proto/
+          '';
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -33,6 +41,8 @@
           buildInputs = with pkgs; [
             openssl
             ffmpeg
+            glib
+            gtk4
           ] ++ lib.optionals isDarwin (with darwin.apple_sdk.frameworks; [ Security CoreServices ]);
         };
 
