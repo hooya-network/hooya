@@ -1,0 +1,32 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@main
+
+    - name: Enable Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@main
+
+    - name: Build binaries
+      run: nix build
+
+    - name: Upload hooyad artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: hooyad-x86_64-linux
+        path: result/bin/hooyad
+
+    - name: Upload hooya-web-proxy artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: hooya-web-proxy-x86_64-linux
+        path: result/bin/hooya-web-proxy
