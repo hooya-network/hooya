@@ -1,0 +1,24 @@
+[Unit]
+Description=Hooya Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=hooya
+Group=hooya
+WorkingDirectory=/opt/hooya
+ExecStart=/opt/hooya/bin/hooyad
+Restart=always
+RestartSec=10
+Environment=HOOYAD_FILESTORE=/opt/hooya/filestore
+Environment=HOOYAD_ENDPOINT=0.0.0.0:8531
+
+# security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/hooya/filestore
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=Hooya Web Proxy
+After=network.target hooyad.service
+Requires=hooyad.service
+
+[Service]
+Type=simple
+User=hooya
+Group=hooya
+WorkingDirectory=/opt/hooya
+ExecStart=/opt/hooya/bin/hooya-web-proxy
+Restart=always
+RestartSec=10
+
+# security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

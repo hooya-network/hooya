@@ -1,0 +1,40 @@
+services:
+  hooyad:
+    image: ghcr.io/hooya-network/hooyad:v0.1.2
+    ports:
+      - "8531:8531"
+    environment:
+      - HOOYAD_ENDPOINT=0.0.0.0:8531
+      - HOOYAD_FILESTORE=/data
+    volumes:
+      - hooya_data:/data
+    restart: unless-stopped
+
+  hooya-web-proxy:
+    image: ghcr.io/hooya-network/hooya-web-proxy:v0.1.2
+    ports:
+      - "8532:8532"
+    environment:
+      - HOOYA_WEB_PROXY_ENDPOINT=0.0.0.0:8532
+      - HOOYAD_ENDPOINT=hooyad:8531
+      - HOOYA_DATADIR=/data
+    volumes:
+      - hooya_data:/data
+    depends_on:
+      - hooyad
+    restart: unless-stopped
+
+  hooya-web-ui:
+    image: ghcr.io/hooya-network/hooya-web-ui:v0.1.2
+    ports:
+      - "3000:3000"
+    depends_on:
+      - hooya-web-proxy
+    restart: unless-stopped
+
+volumes:
+  hooya_data:
+
+networks:
+  default:
+    name: hooya-network

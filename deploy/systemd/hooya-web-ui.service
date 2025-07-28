@@ -1,0 +1,25 @@
+[Unit]
+Description=Hooya Web UI
+After=network.target hooya-web-proxy.service
+Requires=hooya-web-proxy.service
+
+[Service]
+Type=simple
+User=hooya
+Group=hooya
+WorkingDirectory=/opt/hooya-web-ui
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOOYA_WEB_PROXY_URL=http://localhost:8532
+
+# security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

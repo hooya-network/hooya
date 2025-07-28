@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hooya-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hooyad
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hooyad
+  template:
+    metadata:
+      labels:
+        app: hooyad
+    spec:
+      containers:
+      - name: hooyad
+        image: ghcr.io/hooya-network/hooyad:v0.1.2
+        ports:
+        - containerPort: 8531
+        volumeMounts:
+        - name: hooya-data
+          mountPath: /data
+      volumes:
+      - name: hooya-data
+        persistentVolumeClaim:
+          claimName: hooya-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hooyad-service
+spec:
+  selector:
+    app: hooyad
+  ports:
+  - port: 8531
+    targetPort: 8531
+---apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hooya-web-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hooya-web-proxy
+  template:
+    metadata:
+      labels:
+        app: hooya-web-proxy
+    spec:
+      containers:
+      - name: hooya-web-proxy
+        image: ghcr.io/hooya-network/hooya-web-proxy:v0.1.2
+        ports:
+        - containerPort: 8532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hooya-web-proxy-service
+spec:
+  selector:
+    app: hooya-web-proxy
+  ports:
+  - port: 8532
+    targetPort: 8532
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hooya-web-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hooya-web-ui
+  template:
+    metadata:
+      labels:
+        app: hooya-web-ui
+    spec:
+      containers:
+      - name: hooya-web-ui
+        image: ghcr.io/hooya-network/hooya-web-ui:v0.1.2
+        ports:
+        - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hooya-web-ui-service
+spec:
+  selector:
+    app: hooya-web-ui
+  ports:
+  - port: 3000
+    targetPort: 3000
+  type: LoadBalancer
