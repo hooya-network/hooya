@@ -1034,6 +1034,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // load configuration
     let runtime_config =
         hooya_config::RuntimeConfig::new(filestore_path.clone());
+    tracing::info!(path = filestore_path.to_str(), "filestore initialized");
     let config = runtime_config.load_hooya_config()?;
 
     // create mesh network channel
@@ -1136,6 +1137,8 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
     let enr = enr_builder
         .build(&config.discv5_key)
         .map_err(|e| anyhow::anyhow!("Failed to build ENR: {}", e))?;
+
+    tracing::info!(local_enr = enr.to_string(), "discv5 starting");
 
     let mut discv5 = discv5::Discv5::new(enr, config.discv5_key, discv5_config)
         .map_err(|e| anyhow::anyhow!("Failed to create discv5: {}", e))?;
