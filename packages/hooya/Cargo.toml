@@ -23,7 +23,7 @@ rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"
 hooya-config = { path = "../hooya-config" }
-libp2p = { version = "0.53", features = ["gossipsub", "identify", "ping", "tcp", "tokio", "macros", "dns", "mdns"] }
+libp2p = { version = "0.53", features = ["gossipsub", "identify", "ping", "tcp", "tokio", "macros", "dns", "mdns", "autonat"] }
 trust-dns-resolver = "0.23"
 futures = "0.3"
 discv5 = "0.4"

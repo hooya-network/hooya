@@ -10,16 +10,16 @@ use tracing::{event, Level};
 /// represents a peer we've discovered and can redial
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
-    pub multiaddr: Multiaddr,
-    pub last_seen: u64, // unix timestamp
+    pub enr: discv5::Enr, // ENR is now required - contains all addressing info
+    pub last_seen: u64,   // unix timestamp
     pub connection_attempts: u32,
     pub last_connection_attempt: Option<u64>,
 }
 
-/// serializable version for toml storage - only stores multiaddr
+/// serializable version for toml storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredPeer {
-    multiaddr: String,
+    enr: String, // store ENR as string for serialization - no multiaddr needed
 }
 
 /// manages persistent storage of known peers
@@ -53,18 +53,16 @@ impl AddrBook {
         let mut loaded_count = 0;
         let mut invalid_count = 0;
 
-        // convert string keys back to PeerIds and validate multiaddrs
+        // convert string keys back to PeerIds and validate ENRs
         for (peer_id_str, stored_peer) in stored_peers {
             if let Ok(peer_id) = peer_id_str.parse::<PeerId>() {
-                // validate multiaddr is still parseable
-                if let Ok(multiaddr) =
-                    stored_peer.multiaddr.parse::<Multiaddr>()
-                {
+                // validate ENR is still parseable
+                if let Ok(enr) = stored_peer.enr.parse::<discv5::Enr>() {
                     let now = chrono::Utc::now().timestamp() as u64;
                     self.peers.insert(
                         peer_id,
                         PeerInfo {
-                            multiaddr,
+                            enr,
                             last_seen: now,
                             connection_attempts: 0,
                             last_connection_attempt: None,
@@ -89,18 +87,22 @@ impl AddrBook {
         Ok(())
     }
 
-    /// add or update a peer in the store
-    pub async fn add_peer(&mut self, peer_id: PeerId, multiaddr: Multiaddr) {
+    /// add or update a peer with ENR in the store
+    pub async fn add_peer_with_enr(
+        &mut self,
+        peer_id: PeerId,
+        enr: discv5::Enr,
+    ) {
         let now = chrono::Utc::now().timestamp() as u64;
 
         self.peers
             .entry(peer_id)
             .and_modify(|info| {
-                info.multiaddr = multiaddr.clone();
+                info.enr = enr.clone();
                 info.last_seen = now;
             })
             .or_insert(PeerInfo {
-                multiaddr,
+                enr,
                 last_seen: now,
                 connection_attempts: 0,
                 last_connection_attempt: None,
@@ -150,7 +152,7 @@ impl AddrBook {
         let should_flush = match self.last_flush {
             Some(last) => now.duration_since(last) >= self.flush_interval,
             None => true, // flush immediately if never flushed
-        };
+        } && !self.peers.is_empty();
 
         if should_flush {
             let peer_count = self.peers.len();
@@ -180,7 +182,7 @@ impl AddrBook {
                 (
                     peer_id.to_string(),
                     StoredPeer {
-                        multiaddr: info.multiaddr.to_string(),
+                        enr: info.enr.to_string(),
                     },
                 )
             })
@@ -207,7 +209,14 @@ impl AddrBook {
                         .last_connection_attempt
                         .is_none_or(|last| last < hour_ago)
             })
-            .map(|(peer_id, info)| (*peer_id, info.multiaddr.clone()))
+            .filter_map(|(peer_id, info)| {
+                // derive multiaddr from ENR - use first available TCP address
+                let multiaddrs =
+                    crate::peer_id::enr_to_tcp_multiaddrs(&info.enr);
+                multiaddrs
+                    .first()
+                    .map(|multiaddr| (*peer_id, multiaddr.clone()))
+            })
             .collect()
     }
 

@@ -11,6 +11,7 @@ mod chunked_reader;
 pub use chunked_reader::*;
 
 pub mod addr_book;
+pub mod address_discovery;
 pub mod chat_handler;
 pub mod chatroom;
 pub mod cid;
@@ -19,6 +20,7 @@ pub mod image;
 pub mod keys;
 pub mod local;
 pub mod mesh_network;
+pub mod peer_id;
 pub mod runtime;
 pub mod video;
 pub mod visibility;

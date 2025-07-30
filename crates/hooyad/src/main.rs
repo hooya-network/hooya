@@ -1037,6 +1037,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(path = filestore_path.to_str(), "filestore initialized");
     let config = runtime_config.load_hooya_config()?;
 
+    // create and load addr_book for mesh network
+    let addrbook_path = runtime_config.addrbook_path();
+    let flush_interval = std::time::Duration::from_secs(300); // 5 minutes
+    let mut addr_book =
+        hooya::addr_book::AddrBook::new(addrbook_path, flush_interval);
+    if let Err(e) = addr_book.load().await {
+        event!(Level::WARN, %e, "failed to load address book");
+    }
+
     // create mesh network channel
     let (mesh_tx, mesh_rx) = tokio::sync::mpsc::channel(1000);
 
@@ -1064,10 +1073,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             discv5_key,
             libp2p_key,
             filestore_path: filestore_path_clone,
+            addr_book,
         })
         .await
         {
             event!(Level::ERROR, %e, "mesh network failed");
+            std::process::exit(1);
         }
     });
 
@@ -1107,9 +1118,10 @@ struct MeshNetworkConfig {
     discv5_key: discv5::enr::CombinedKey,
     libp2p_key: libp2p::identity::Keypair,
     filestore_path: std::path::PathBuf,
+    addr_book: hooya::addr_book::AddrBook,
 }
 
-async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
+async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
     // get discv5 configuration from networking config
     let (ipv4_config, ipv6_config) = config
         .networking_config
@@ -1125,18 +1137,71 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
 
     let discv5_config = discv5::ConfigBuilder::new(listen_config).build();
 
-    // build ENR with the first available address for advertising
-    let mut enr_builder = discv5::enr::Enr::builder();
-    if let Some((ipv4, port)) = ipv4_config {
-        enr_builder.ip4(ipv4).udp4(port);
-    }
-    if let Some((ipv6, port)) = ipv6_config {
-        enr_builder.ip6(ipv6).udp6(port);
-    }
+    // build ENR using advertise addresses or discovery phase
+    let enr = if !config.networking_config.advertise_addresses.is_empty() {
+        // case 1: advertise addresses provided, use them directly
+        let advertise_ips: Result<Vec<std::net::IpAddr>, _> = config
+            .networking_config
+            .advertise_addresses
+            .iter()
+            .map(|addr| addr.parse())
+            .collect();
 
-    let enr = enr_builder
-        .build(&config.discv5_key)
-        .map_err(|e| anyhow::anyhow!("Failed to build ENR: {}", e))?;
+        let advertise_ips = advertise_ips
+            .map_err(|e| anyhow::anyhow!("Invalid advertise address: {}", e))?;
+
+        hooya::address_discovery::build_enr_from_addresses(
+            &advertise_ips,
+            &config.networking_config,
+            &config.discv5_key,
+        )?
+    } else {
+        // case 2: no advertise addresses, enter discovery phase
+        let bootstrap_peer = hooya::address_discovery::get_bootstrap_peer(
+            &config.addr_book,
+            &config.networking_config.discovery,
+        )
+        .await?;
+
+        if bootstrap_peer.is_none() {
+            return Err(anyhow::anyhow!(
+                "no bootstrap peers available for address discovery"
+            ));
+        }
+
+        let dialable_addresses = hooya::address_discovery::run_discovery_phase(
+            &config.networking_config,
+            config.libp2p_key.clone(),
+            bootstrap_peer.unwrap(),
+        )
+        .await?;
+
+        if dialable_addresses.is_empty() {
+            return Err(anyhow::anyhow!("no dialable addresses"));
+        }
+
+        // extract IPs from discovered multiaddrs
+        let discovered_ips: Vec<std::net::IpAddr> = dialable_addresses
+            .iter()
+            .filter_map(|addr| {
+                addr.iter().find_map(|protocol| match protocol {
+                    libp2p::multiaddr::Protocol::Ip4(ip) => {
+                        Some(std::net::IpAddr::V4(ip))
+                    }
+                    libp2p::multiaddr::Protocol::Ip6(ip) => {
+                        Some(std::net::IpAddr::V6(ip))
+                    }
+                    _ => None,
+                })
+            })
+            .collect();
+
+        hooya::address_discovery::build_enr_from_addresses(
+            &discovered_ips,
+            &config.networking_config,
+            &config.discv5_key,
+        )?
+    };
 
     tracing::info!(local_enr = enr.to_string(), "discv5 starting");
 
@@ -1146,6 +1211,65 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
         .start()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start discv5: {}", e))?;
+
+    let addr_book_peers = config.addr_book.get_peers();
+
+    // add addr_book peers to discv5 for peer discovery
+    for (peer_id, peer_info) in config.addr_book.get_peers() {
+        discv5
+            .add_enr(peer_info.enr.clone())
+            .expect("could not add ENR to discv5");
+        tracing::debug!(%peer_id, "added addrbook peer to discv5");
+    }
+
+    // given no peers in the addr_book we'll try to discover some from the
+    // dns bootstrap node
+    if addr_book_peers.is_empty()
+        && config.networking_config.discovery.dns.enabled
+    {
+        if let Ok(Some(bootstrap_enr)) =
+            hooya::address_discovery::get_dns_bootstrap_enr(
+                &config.networking_config.discovery.dns.bootstrap_domain,
+            )
+            .await
+        {
+            let _ = discv5.add_enr(bootstrap_enr.clone());
+            let bootstrap_node_id = bootstrap_enr.node_id();
+            tracing::info!(node_id = %bootstrap_node_id, "added DNS bootstrap node to discv5 routing table");
+        }
+    }
+
+    // peer discovery
+    if !addr_book_peers.is_empty()
+        || config.networking_config.discovery.dns.enabled
+    {
+        tracing::info!("starting peer discovery");
+
+        // query discv5 for more peers
+        let discovery_target = discv5.local_enr().node_id();
+        if let Ok(discovered_enrs) = discv5.find_node(discovery_target).await {
+            let mut peer_count = 0;
+            for enr in discovered_enrs.iter().take(20) {
+                // limit to 20 peers
+                // convert ENR to multiaddr for libp2p
+                let tcp_multiaddrs = hooya::peer_id::enr_to_tcp_multiaddrs(enr);
+                if !tcp_multiaddrs.is_empty() {
+                    let peer_id = hooya::peer_id::enr_to_peer_id(enr);
+                    config
+                        .addr_book
+                        .add_peer_with_enr(peer_id, enr.clone())
+                        .await;
+                    peer_count += 1;
+                    tracing::debug!(%peer_id, multiaddr = %tcp_multiaddrs[0], "discovered peer added to addrbook");
+                }
+            }
+            tracing::info!(peer_count, "peer discovery completed");
+        } else {
+            tracing::warn!(
+                "peer discovery failed, continuing with existing peers"
+            );
+        }
+    }
 
     // create libp2p gossipsub behavior
     let gossipsub_config = ConfigBuilder::default()
@@ -1169,11 +1293,18 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
 
     let ping = PingBehavior::new(ping::Config::default());
 
-    let mdns = MdnsBehavior::new(
-        mdns::Config::default(),
-        config.libp2p_key.public().to_peer_id(),
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create mdns: {}", e))?;
+    // conditionally create mdns behavior based on config
+    let mdns = if config.networking_config.discovery.mdns.enabled {
+        libp2p::swarm::behaviour::toggle::Toggle::from(Some(
+            MdnsBehavior::new(
+                mdns::Config::default(),
+                config.libp2p_key.public().to_peer_id(),
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create mdns: {}", e))?,
+        ))
+    } else {
+        libp2p::swarm::behaviour::toggle::Toggle::from(None)
+    };
 
     // create mesh behavior
     let behavior = hooya::mesh_network::MeshBehavior {
@@ -1217,16 +1348,8 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
         config.instance_events,
     );
 
-    // create and load addr_book
-    let runtime_config =
-        hooya_config::RuntimeConfig::new(config.filestore_path.clone());
-    let addr_book_path = runtime_config.addrbook_path();
-    let flush_interval = std::time::Duration::from_secs(300); // 5 minutes
-    let mut addr_book =
-        hooya::addr_book::AddrBook::new(addr_book_path, flush_interval);
-    if let Err(e) = addr_book.load().await {
-        event!(Level::WARN, %e, "failed to load address book");
-    }
+    // use addr_book from config
+    let addr_book = config.addr_book;
 
     // create mesh network
     let mut mesh_network = hooya::mesh_network::MeshNetwork::new(

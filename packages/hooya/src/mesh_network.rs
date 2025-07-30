@@ -3,7 +3,7 @@ use crate::mesh::{ChatMessage, MeshMessage};
 use anyhow::Result;
 use discv5::{Discv5, Enr, Event as Discv5Event};
 use futures::StreamExt;
-use hooya_config::{DiscoveryConfig, NetworkingConfig};
+use hooya_config::NetworkingConfig;
 use libp2p::{
     gossipsub::{
         Behaviour as GossipsubBehavior, Event as GossipsubEvent, IdentTopic,
@@ -11,19 +11,15 @@ use libp2p::{
     identify::{self, Behaviour as IdentifyBehavior},
     mdns::{self, tokio::Behaviour as MdnsBehavior}, // lol american spelling
     ping::{self, Behaviour as PingBehavior},
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
     Multiaddr,
     PeerId,
     Swarm,
 };
 use prost::Message;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{event, Level};
-use trust_dns_resolver::{config::*, TokioAsyncResolver};
 
 /// Outgoing message types that can be sent over the mesh
 #[derive(Debug, Clone)]
@@ -56,7 +52,7 @@ pub struct MeshBehavior {
     pub gossipsub: GossipsubBehavior,
     pub identify: IdentifyBehavior,
     pub ping: PingBehavior,
-    pub mdns: MdnsBehavior,
+    pub mdns: Toggle<MdnsBehavior>,
 }
 
 #[derive(Debug)]
@@ -88,119 +84,6 @@ impl From<ping::Event> for MeshBehaviorEvent {
 impl From<mdns::Event> for MeshBehaviorEvent {
     fn from(event: mdns::Event) -> Self {
         MeshBehaviorEvent::Mdns(event)
-    }
-}
-
-/// Discovery manager handles DNS bootstrap discovery
-struct DiscoveryManager {
-    dns_enabled: bool,
-    dns_interval: Duration,
-    bootstrap_domain: String,
-    last_dns_lookup: Option<Instant>,
-    dns_resolver: Option<TokioAsyncResolver>,
-}
-
-impl DiscoveryManager {
-    fn new(config: &DiscoveryConfig) -> Self {
-        Self {
-            dns_enabled: config.dns.enabled,
-            dns_interval: Duration::from_secs(config.dns.lookup_interval_secs),
-            bootstrap_domain: config.dns.bootstrap_domain.clone(),
-            last_dns_lookup: None,
-            dns_resolver: None,
-        }
-    }
-
-    async fn initialize(&mut self) -> Result<()> {
-        if self.dns_enabled {
-            let resolver = TokioAsyncResolver::tokio(
-                ResolverConfig::default(),
-                ResolverOpts::default(),
-            );
-            self.dns_resolver = Some(resolver);
-        }
-        Ok(())
-    }
-
-    fn time_until_next_discovery(&self) -> Option<Duration> {
-        if !self.dns_enabled {
-            return None;
-        }
-
-        let now = Instant::now();
-        let next_dns = match self.last_dns_lookup {
-            Some(last) => last + self.dns_interval,
-            None => now, // run immediately if never run
-        };
-
-        if next_dns <= now {
-            Some(Duration::ZERO) // ready to run now
-        } else {
-            Some(next_dns - now)
-        }
-    }
-
-    async fn run_discovery_cycle(
-        &mut self,
-        discv5: &Discv5,
-        current_peer_count: usize,
-        max_peers: usize,
-    ) {
-        if current_peer_count >= max_peers {
-            return; // no need to discover more peers
-        }
-
-        let now = Instant::now();
-
-        // DNS bootstrap discovery - only if we have no connected peers
-        if self.dns_enabled
-            && current_peer_count == 0
-            && self.last_dns_lookup.is_none_or(|last| {
-                now.duration_since(last) >= self.dns_interval
-            })
-        {
-            self.discover_dns_bootstrap_peers(discv5).await;
-            self.last_dns_lookup = Some(now);
-        }
-    }
-
-    async fn discover_dns_bootstrap_peers(&self, discv5: &Discv5) {
-        let Some(resolver) = &self.dns_resolver else {
-            return;
-        };
-
-        let txt_records = match resolver
-            .txt_lookup(&self.bootstrap_domain)
-            .await
-        {
-            Ok(records) => records,
-            Err(e) => {
-                event!(Level::WARN, %e, bootstrap_domain = %self.bootstrap_domain, "failed to lookup DNS bootstrap records");
-                return;
-            }
-        };
-
-        for record in txt_records.iter() {
-            for txt_data in record.iter() {
-                let txt_str = match std::str::from_utf8(txt_data) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-
-                if !txt_str.starts_with("enr:") {
-                    continue;
-                }
-
-                let enr = match txt_str.parse::<Enr>() {
-                    Ok(enr) => enr,
-                    Err(_) => continue,
-                };
-
-                if let Err(e) = discv5.add_enr(enr.clone()) {
-                    event!(Level::WARN, %e, %enr, "failed to add ENR from DNS");
-                }
-            }
-        }
     }
 }
 
@@ -260,23 +143,13 @@ impl MeshNetwork {
     ) -> Result<()> {
         self.setup_subscriptions(&mut swarm)?;
 
-        let mut discovery_manager =
-            DiscoveryManager::new(&self.networking_config.discovery);
-        discovery_manager.initialize().await?;
-
         let discv5_events = self.setup_discv5_events(&discv5).await?;
 
         // attempt to reconnect to known peers from previous sessions
         self.reconnect_to_known_peers(&mut swarm).await;
 
-        self.main_event_loop(
-            swarm,
-            discv5,
-            discv5_events,
-            message_rx,
-            discovery_manager,
-        )
-        .await
+        self.main_event_loop(swarm, discv5, discv5_events, message_rx)
+            .await
     }
 
     fn setup_subscriptions(
@@ -308,18 +181,9 @@ impl MeshNetwork {
         discv5: Discv5,
         mut discv5_events: mpsc::Receiver<Discv5Event>,
         mut message_rx: mpsc::Receiver<OutgoingMessage>,
-        mut discovery_manager: DiscoveryManager,
     ) -> Result<()> {
         loop {
-            let discovery_timeout = discovery_manager
-                .time_until_next_discovery()
-                .unwrap_or(Duration::from_secs(3600)); // default to 1 hour if no discovery needed
-
             tokio::select! {
-                // Discovery cycle
-                _ = tokio::time::sleep(discovery_timeout) => {
-                    discovery_manager.run_discovery_cycle(&discv5, swarm.connected_peers().count(), self.networking_config.max_peers).await;
-                }
 
                 // Handle discv5 peer discovery
                 Some(discv5_event) = discv5_events.recv() => {
@@ -367,33 +231,64 @@ impl MeshNetwork {
         swarm: &mut Swarm<MeshBehavior>,
         discv5: &Discv5,
     ) {
-        if let Discv5Event::NodeInserted {
-            node_id,
-            replaced: _,
-        } = event
-        {
-            // get the ENR for this node from discv5
-            if let Some(enr) = discv5.find_enr(&node_id) {
-                if let Some(multiaddr) = self.enr_to_multiaddr(&enr) {
-                    let peer_id = self.enr_to_peer_id(&enr);
+        event!(Level::DEBUG, ?event, "received discv5 event");
 
-                    // only connect if we don't already know this peer
-                    if !self.addr_book.contains_peer(&peer_id)
-                        && swarm.connected_peers().count()
-                            < self.networking_config.max_peers
-                    {
-                        event!(Level::INFO, %peer_id, %multiaddr, "discovered new peer via discv5");
-                        self.addr_book
-                            .add_peer(peer_id, multiaddr.clone())
-                            .await;
+        match event {
+            Discv5Event::NodeInserted {
+                node_id,
+                replaced: _,
+            } => {
+                // get the ENR for this node from discv5
+                if let Some(enr) = discv5.find_enr(&node_id) {
+                    self.handle_discovered_enr(
+                        enr,
+                        swarm,
+                        "discv5 node inserted",
+                    )
+                    .await;
+                }
+            }
+            Discv5Event::SessionEstablished(enr, _socket_addr) => {
+                event!(Level::DEBUG, enr = %enr, "discv5 session established");
+                self.handle_discovered_enr(
+                    enr,
+                    swarm,
+                    "discv5 session established",
+                )
+                .await;
+            }
+            Discv5Event::Discovered(enr) => {
+                event!(Level::DEBUG, enr = %enr, "discv5 peer discovered");
+                self.handle_discovered_enr(enr, swarm, "discv5 discovered")
+                    .await;
+            }
+            _ => {
+                // handle other events if needed
+            }
+        }
+    }
 
-                        // attempt to dial
-                        if let Err(e) = swarm.dial(multiaddr.clone()) {
-                            event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial discovered peer");
-                            self.addr_book
-                                .record_connection_attempt(&peer_id, false);
-                        }
-                    }
+    async fn handle_discovered_enr(
+        &mut self,
+        enr: Enr,
+        swarm: &mut Swarm<MeshBehavior>,
+        source: &str,
+    ) {
+        if let Some(multiaddr) = self.enr_to_multiaddr(&enr) {
+            let peer_id = self.enr_to_peer_id(&enr);
+
+            // only connect if we don't already know this peer
+            if !self.addr_book.contains_peer(&peer_id)
+                && swarm.connected_peers().count()
+                    < self.networking_config.max_peers
+            {
+                event!(Level::INFO, %peer_id, %multiaddr, source, "discovered new peer");
+                self.addr_book.add_peer_with_enr(peer_id, enr.clone()).await;
+
+                // attempt to dial
+                if let Err(e) = swarm.dial(multiaddr.clone()) {
+                    event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial discovered peer");
+                    self.addr_book.record_connection_attempt(&peer_id, false);
                 }
             }
         }
@@ -460,16 +355,12 @@ impl MeshNetwork {
                         && swarm.connected_peers().count()
                             < self.networking_config.max_peers
                     {
-                        event!(Level::INFO, %peer_id, %multiaddr, "discovered mDNS peer");
-                        self.addr_book
-                            .add_peer(peer_id, multiaddr.clone())
-                            .await;
+                        event!(Level::INFO, %peer_id, %multiaddr, "discovered mDNS peer (no ENR - dial only)");
 
-                        // dial the discovered peer to establish connection
+                        // dial the discovered peer directly without adding to addr_book
+                        // since mDNS doesn't provide ENRs, we can't store them properly
                         if let Err(e) = swarm.dial(multiaddr.clone()) {
                             event!(Level::WARN, %e, %peer_id, %multiaddr, "failed to dial mDNS peer");
-                            self.addr_book
-                                .record_connection_attempt(&peer_id, false);
                         }
                     }
                 }
@@ -477,7 +368,7 @@ impl MeshNetwork {
             mdns::Event::Expired(list) => {
                 for (peer_id, _) in list {
                     event!(Level::DEBUG, %peer_id, "mDNS peer expired");
-                    self.addr_book.remove_peer(&peer_id).await;
+                    // Note: mDNS peers aren't stored in addr_book anymore
                 }
             }
         }
@@ -548,16 +439,7 @@ impl MeshNetwork {
 
     /// Extract PeerId from ENR
     fn enr_to_peer_id(&self, enr: &Enr) -> PeerId {
-        // use the node_id as a basis for peer_id
-        // in a real implementation you'd extract the actual public key
-        let node_id = enr.node_id();
-        PeerId::from_bytes(&node_id.raw()).unwrap_or_else(|_| {
-            // fallback: generate peer_id from node_id hash
-            let mut hasher = DefaultHasher::new();
-            node_id.raw().hash(&mut hasher);
-            let hash = hasher.finish();
-            PeerId::from_bytes(&hash.to_le_bytes()).unwrap_or(PeerId::random())
-        })
+        crate::peer_id::enr_to_peer_id(enr)
     }
 
     /// Validate basic mesh message structure

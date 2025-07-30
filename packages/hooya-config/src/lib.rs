@@ -193,6 +193,7 @@ pub struct NetworkingConfig {
     pub max_peers: usize,
     pub max_message_size_bytes: usize,
     pub listen_addresses: Vec<String>,
+    pub advertise_addresses: Vec<String>,
     pub discv5_listen_addresses: Vec<String>,
     pub discovery: DiscoveryConfig,
 }
@@ -273,7 +274,6 @@ pub struct MdnsConfig {
 pub struct DnsConfig {
     pub enabled: bool,
     pub bootstrap_domain: String,
-    pub lookup_interval_secs: u64,
 }
 
 impl Default for InstanceConfig {
@@ -300,7 +300,6 @@ impl Default for DnsConfig {
         Self {
             enabled: true,
             bootstrap_domain: "bootstrap.hooya.org".to_string(),
-            lookup_interval_secs: 300,
         }
     }
 }
@@ -314,6 +313,7 @@ impl Default for NetworkingConfig {
                 "/ip4/0.0.0.0/tcp/8530".to_string(),
                 "/ip6/::/tcp/8530".to_string(),
             ],
+            advertise_addresses: vec![], // empty triggers discovery phase
             discv5_listen_addresses: vec![
                 "/ip4/0.0.0.0/udp/8530".to_string(),
                 "/ip6/::/udp/8530".to_string(),
