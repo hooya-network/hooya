@@ -4,12 +4,10 @@ hooya
 P2P [booru](https://en.wiktionary.org/wiki/booru). It associates images and
 videos with tag metadata.
 
-<figure>
 <a href="https://public-demo.hooya.wesl.ee/cid/bafkreihsz45vfhczlhihjbg6imrbtmrbaoeepcjvhfuhkjktaxzrw6vroy">
-<img class="hooya-img-medium" src="https://web.hooya.wesl.ee/cid-thumbnail/bafkreicflu5adp3sitaqqclujiy4cuyqkhdom2irhpu366gym4q3niiega/medium">
+<img align="center" src="https://web.hooya.wesl.ee/cid-thumbnail/bafkreicflu5adp3sitaqqclujiy4cuyqkhdom2irhpu366gym4q3niiega/medium">
 </a>
-<figcaption><p>This image, itself, is hosted with HooYa.</p></figcaption>
-</figure>
+<p align="center">This image, itself, is hosted with HooYa.</p>
 
 Longer discussion on what boorus are and on the HooYa vision is at
 [wesl.ee/HooYa](https://wesl.ee/HooYa/).
