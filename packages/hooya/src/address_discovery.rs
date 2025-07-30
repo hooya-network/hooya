@@ -153,7 +153,6 @@ pub async fn get_dns_bootstrap_enr(
             if !txt_str.starts_with("enr:") {
                 continue;
             }
-            let txt_str = "enr:-Iu4QE0hF2kshVQEcJwDqMcvnHt0U2UsRlOBom50zLpHpcXOBGYkWsZVeHLEHPS55IbZhvsHOONo_uUI8_pkEUL3sqcBgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQMC5-nkUJqLXQbu7hHKRKWI00xbm1kfqiVVMRMUhoHGP4N0Y3CCIbaDdWRwgiG2";
             if let Ok(enr) = txt_str.parse::<Enr>() {
                 return Ok(Some(enr));
             }
