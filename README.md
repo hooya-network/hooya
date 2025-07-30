@@ -1,8 +1,15 @@
 hooya
 =====
 
-P2P [booru](https://en.wiktionary.org/wiki/booru). It organizes images with
-tags.
+P2P [booru](https://en.wiktionary.org/wiki/booru). It associates images and
+videos with tag metadata.
+
+<figure>
+<a href="https://public-demo.hooya.wesl.ee/cid/bafkreihsz45vfhczlhihjbg6imrbtmrbaoeepcjvhfuhkjktaxzrw6vroy">
+<img class="hooya-img-medium" src="https://web.hooya.wesl.ee/cid-thumbnail/bafkreicflu5adp3sitaqqclujiy4cuyqkhdom2irhpu366gym4q3niiega/medium">
+</a>
+<figcaption><p>This image, itself, is hosted with HooYa.</p></figcaption>
+</figure>
 
 Longer discussion on what boorus are and on the HooYa vision is at
 [wesl.ee/HooYa](https://wesl.ee/HooYa/).
@@ -12,13 +19,14 @@ Longer discussion on what boorus are and on the HooYa vision is at
 - **[hooyad](crates/hooyad/)** - Core daemon for file storage. Handles P2P connectivity
 - **[hooya-web-proxy](crates/hooya-web-proxy/)** - HTTP proxy server that provides REST API access to
   hooyad for clients like hooya-web-ui and hooya-client
-- **[hooya-client](crates/hooya-client/)** - CLI client for interacting with hooyad. Probably
-  deprecated soon because web-ui is just better
-- **[hooya-web-ui](https://github.com/hooya-network/hooya-web-ui)** - Next.js web interface for browsing and managing files ([separate repository](https://github.com/hooya-network/hooya-web-ui))
-- **[hooya-gtk](hooya-gtk/)** - GTK desktop application (experimental)
-- **[proto](proto/)** - Protocol buffer definitions for gRPC communication
-
-
+- **[hooya-web-ui](https://github.com/hooya-network/hooya-web-ui)** - Next.js
+  web interface for browsing and managing files
+- **[hooya-client](crates/hooya-client/)** - CLI client for interacting with
+  hooyad. Probably deprecated soon because web-ui is just better.
+- **[hooya-gtk](hooya-gtk/)** - GTK desktop application. Very dead. Deader than
+  the CLI client.
+- **[proto](https://github.com/hooya-network/hooya-protobuf)** - Protocol buffer
+  definitions for gRPC communication
 
 Installation
 ------------
