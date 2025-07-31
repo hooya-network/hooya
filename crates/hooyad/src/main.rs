@@ -1121,7 +1121,7 @@ struct MeshNetworkConfig {
     addr_book: hooya::addr_book::AddrBook,
 }
 
-async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
+async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
     // get discv5 configuration from networking config
     let (ipv4_config, ipv6_config) = config
         .networking_config
@@ -1137,7 +1137,7 @@ async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
 
     let discv5_config = discv5::ConfigBuilder::new(listen_config).build();
 
-    // build ENR using advertise addresses or discovery phase
+    // build ENR using advertise_addresses or a peer
     let enr = if !config.networking_config.advertise_addresses.is_empty() {
         // case 1: advertise addresses provided, use them directly
         let advertise_ips: Result<Vec<std::net::IpAddr>, _> = config
@@ -1156,14 +1156,14 @@ async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
             &config.discv5_key,
         )?
     } else {
-        // case 2: no advertise addresses, enter discovery phase
-        let bootstrap_peer = hooya::address_discovery::get_bootstrap_peer(
+        // case 2: no advertise addresses so query someone
+        let bootstrap_peers = hooya::address_discovery::get_bootstrap_peers(
             &config.addr_book,
             &config.networking_config.discovery,
         )
         .await?;
 
-        if bootstrap_peer.is_none() {
+        if bootstrap_peers.is_empty() {
             return Err(anyhow::anyhow!(
                 "no bootstrap peers available for address discovery"
             ));
@@ -1172,7 +1172,7 @@ async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
         let dialable_addresses = hooya::address_discovery::run_discovery_phase(
             &config.networking_config,
             config.libp2p_key.clone(),
-            bootstrap_peer.unwrap(),
+            bootstrap_peers,
         )
         .await?;
 
@@ -1239,37 +1239,7 @@ async fn run_mesh_network(mut config: MeshNetworkConfig) -> anyhow::Result<()> {
         }
     }
 
-    // peer discovery
-    if !addr_book_peers.is_empty()
-        || config.networking_config.discovery.dns.enabled
-    {
-        tracing::info!("starting peer discovery");
-
-        // query discv5 for more peers
-        let discovery_target = discv5.local_enr().node_id();
-        if let Ok(discovered_enrs) = discv5.find_node(discovery_target).await {
-            let mut peer_count = 0;
-            for enr in discovered_enrs.iter().take(20) {
-                // limit to 20 peers
-                // convert ENR to multiaddr for libp2p
-                let tcp_multiaddrs = hooya::peer_id::enr_to_tcp_multiaddrs(enr);
-                if !tcp_multiaddrs.is_empty() {
-                    let peer_id = hooya::peer_id::enr_to_peer_id(enr);
-                    config
-                        .addr_book
-                        .add_peer_with_enr(peer_id, enr.clone())
-                        .await;
-                    peer_count += 1;
-                    tracing::debug!(%peer_id, multiaddr = %tcp_multiaddrs[0], "discovered peer added to addrbook");
-                }
-            }
-            tracing::info!(peer_count, "peer discovery completed");
-        } else {
-            tracing::warn!(
-                "peer discovery failed, continuing with existing peers"
-            );
-        }
-    }
+    // peer discovery is now handled by continuous discovery in mesh network event loop
 
     // create libp2p gossipsub behavior
     let gossipsub_config = ConfigBuilder::default()

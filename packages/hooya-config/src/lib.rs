@@ -254,11 +254,12 @@ impl NetworkingConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
     pub mdns: MdnsConfig,
     pub dns: DnsConfig,
+    pub discovery_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +301,16 @@ impl Default for DnsConfig {
         Self {
             enabled: true,
             bootstrap_domain: "bootstrap.hooya.org".to_string(),
+        }
+    }
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            mdns: MdnsConfig::default(),
+            dns: DnsConfig::default(),
+            discovery_interval_secs: 30,
         }
     }
 }

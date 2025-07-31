@@ -182,8 +182,39 @@ impl MeshNetwork {
         mut discv5_events: mpsc::Receiver<Discv5Event>,
         mut message_rx: mpsc::Receiver<OutgoingMessage>,
     ) -> Result<()> {
+        // setup periodic timers
+        let mut discovery_interval =
+            tokio::time::interval(std::time::Duration::from_secs(
+                self.networking_config.discovery.discovery_interval_secs,
+            ));
+        discovery_interval
+            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // p2p info every 60s
+        let mut logging_interval =
+            tokio::time::interval(std::time::Duration::from_secs(60));
+        logging_interval
+            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // this will run one round of peer discovery as soon as
+        self.handle_periodic_discovery(
+            &discv5,
+            swarm.connected_peers().count(),
+        )
+        .await;
+
         loop {
             tokio::select! {
+
+                // Handle periodic peer discovery
+                _ = discovery_interval.tick() => {
+                    self.handle_periodic_discovery(&discv5, swarm.connected_peers().count()).await;
+                }
+
+                // Handle periodic logging
+                _ = logging_interval.tick() => {
+                    self.handle_periodic_logging(swarm.connected_peers().count());
+                }
 
                 // Handle discv5 peer discovery
                 Some(discv5_event) = discv5_events.recv() => {
@@ -490,5 +521,54 @@ impl MeshNetwork {
         }
 
         true
+    }
+
+    async fn handle_periodic_discovery(
+        &mut self,
+        discv5: &Discv5,
+        connected_count: usize,
+    ) {
+        // only do discovery if we're below max_peers
+        if connected_count >= self.networking_config.max_peers {
+            return;
+        }
+
+        // query discv5 with random node id to populate routing table
+        let random_target = discv5::enr::NodeId::random();
+        match discv5.find_node(random_target).await {
+            Ok(discovered_enrs) => {
+                let mut new_peers = 0;
+                for enr in discovered_enrs.iter().take(20) {
+                    let peer_id = self.enr_to_peer_id(enr);
+                    if !self.addr_book.contains_peer(&peer_id) {
+                        self.addr_book
+                            .add_peer_with_enr(peer_id, enr.clone())
+                            .await;
+                        new_peers += 1;
+                    }
+                }
+                if new_peers > 0 {
+                    event!(
+                        Level::DEBUG,
+                        new_peers,
+                        "periodic discovery found new peers"
+                    );
+                }
+            }
+            Err(e) => {
+                event!(Level::DEBUG, %e, "periodic discovery query failed");
+            }
+        }
+    }
+
+    fn handle_periodic_logging(&self, connected_count: usize) {
+        let total_known = self.addr_book.get_peers().len();
+        event!(
+            Level::INFO,
+            connected_peers = connected_count,
+            known_peers = total_known,
+            max_peers = self.networking_config.max_peers,
+            "mesh network status"
+        );
     }
 }

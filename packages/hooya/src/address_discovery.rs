@@ -92,20 +92,21 @@ impl AddressDiscovery {
     }
 }
 
-pub async fn get_bootstrap_peer(
+pub async fn get_bootstrap_peers(
     addrbook: &AddrBook,
     discovery_config: &DiscoveryConfig,
-) -> Result<Option<(PeerId, Multiaddr)>> {
-    // try addrbook first
+) -> Result<Vec<(PeerId, Multiaddr)>> {
+    let mut bootstrap_peers = Vec::new();
+
+    // try addrbook first - get all dialable peers
     let dialable_peers = addrbook.get_dialable_peers();
-    if !dialable_peers.is_empty() {
-        let (peer_id, multiaddr) = &dialable_peers[0];
+    for (peer_id, multiaddr) in dialable_peers {
         event!(Level::INFO, %peer_id, %multiaddr, "using addrbook peer for discovery");
-        return Ok(Some((*peer_id, multiaddr.clone())));
+        bootstrap_peers.push((peer_id, multiaddr));
     }
 
-    // fallback to DNS bootstrap if enabled and addrbook empty
-    if discovery_config.dns.enabled {
+    // fallback to DNS bootstrap if enabled and no addrbook peers
+    if bootstrap_peers.is_empty() && discovery_config.dns.enabled {
         if let Some(enr) =
             get_dns_bootstrap_enr(&discovery_config.dns.bootstrap_domain)
                 .await?
@@ -128,12 +129,12 @@ pub async fn get_bootstrap_peer(
                     multiaddrs[0].clone()
                 };
                 event!(Level::INFO, %peer_id, %multiaddr, "using DNS bootstrap peer for discovery");
-                return Ok(Some((peer_id, multiaddr)));
+                bootstrap_peers.push((peer_id, multiaddr));
             }
         }
     }
 
-    Ok(None)
+    Ok(bootstrap_peers)
 }
 
 pub async fn get_dns_bootstrap_enr(
@@ -327,7 +328,7 @@ pub fn build_enr_from_addresses(
 pub async fn run_discovery_phase(
     networking_config: &NetworkingConfig,
     libp2p_key: libp2p::identity::Keypair,
-    bootstrap_peer: (PeerId, Multiaddr),
+    bootstrap_peers: Vec<(PeerId, Multiaddr)>,
 ) -> Result<Vec<Multiaddr>> {
     use futures_util::StreamExt;
     use libp2p::{identify, SwarmBuilder};
@@ -367,9 +368,13 @@ pub async fn run_discovery_phase(
         swarm.listen_on(listen_addr)?;
     }
 
-    // connect to bootstrap peer
-    let (_bootstrap_peer_id, bootstrap_addr) = &bootstrap_peer;
-    swarm.dial(bootstrap_addr.clone())?;
+    // fuck it just ask em all
+    for (peer_id, bootstrap_addr) in &bootstrap_peers {
+        event!(Level::INFO, %peer_id, %bootstrap_addr, "dialing bootstrap peer for discovery");
+        if let Err(e) = swarm.dial(bootstrap_addr.clone()) {
+            event!(Level::WARN, %e, %peer_id, %bootstrap_addr, "failed to dial bootstrap peer");
+        }
+    }
 
     // discovery event loop
     tokio::select! {
@@ -400,7 +405,7 @@ pub async fn run_discovery_phase(
                 }
             }
         } => {
-            Err(anyhow::anyhow!("unable to discover our dialable address"))
+            Err(anyhow::anyhow!("unable to discover our advertisable address"))
         }
     }
 }
