@@ -32,6 +32,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "TagQuery",
             "#[derive(serde::Deserialize, serde::Serialize)]",
         )
+        .type_attribute(
+            "BatchTagCidReply",
+            "#[derive(serde::Deserialize, serde::Serialize)]",
+        )
+        .type_attribute(
+            "TagCidResult",
+            "#[derive(serde::Deserialize, serde::Serialize)]",
+        )
         .enum_attribute(
             "ext_file",
             "#[derive(serde::Deserialize, serde::Serialize)]",

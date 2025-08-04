@@ -369,7 +369,12 @@ impl MeshNetwork {
     }
 
     async fn handle_identify_event(&self, event: identify::Event) {
-        if let identify::Event::Received { peer_id, info: _, connection_id: _ } = event {
+        if let identify::Event::Received {
+            peer_id,
+            info: _,
+            connection_id: _,
+        } = event
+        {
             event!(Level::DEBUG, %peer_id, "identified peer");
         }
     }

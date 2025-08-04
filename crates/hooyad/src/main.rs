@@ -3,8 +3,9 @@ use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::proto::{
     control_server::{Control, ControlServer},
-    AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest, ChatEvent,
-    CidInfoReply, CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
+    AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest,
+    BatchTagCidReply, BatchTagCidRequest, ChatEvent, CidInfoReply,
+    CidInfoRequest, CidThumbnailRequest, CompleteUploadReply,
     CompleteUploadRequest, ContentAtCidRequest, FileChunk, ForgetFileReply,
     ForgetFileRequest, GetChatChannelsReply, GetChatChannelsRequest,
     GetChatHistoryReply, GetChatHistoryRequest, GetUploadStatusReply,
@@ -15,9 +16,9 @@ use hooya::proto::{
     SendChatMessageReply, SendChatMessageRequest, StartUploadSessionReply,
     StartUploadSessionRequest, StreamToFilestoreReply, SuggestTagReply,
     SuggestTagRequest, SystemInfoReply, SystemInfoRequest, SystemStats,
-    TagCidReply, TagCidRequest, TagsReply, TagsRequest, UploadChunkReply,
-    UploadChunkRequest, UploadStatus, VersionInfo, VersionReply,
-    VersionRequest,
+    TagCidReply, TagCidRequest, TagCidResult, TagsReply, TagsRequest,
+    UploadChunkReply, UploadChunkRequest, UploadStatus, VersionInfo,
+    VersionReply, VersionRequest,
 };
 use hooya::runtime::Runtime;
 use libp2p::{
@@ -240,6 +241,83 @@ impl Control for IControl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(reply))
+    }
+
+    async fn batch_tag_cid(
+        &self,
+        r: Request<BatchTagCidRequest>,
+    ) -> Result<Response<BatchTagCidReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
+        let mut results = Vec::new();
+
+        for pair in req.cid_tag_pairs {
+            let result = match runtime.indexed_file(pair.cid.clone()).await {
+                Ok(_) => {
+                    match runtime.tag_cid(pair.cid.clone(), pair.tags).await {
+                        Ok(_) => TagCidResult {
+                            cid: pair.cid,
+                            success: true,
+                            error_message: None,
+                        },
+                        Err(e) => TagCidResult {
+                            cid: pair.cid,
+                            success: false,
+                            error_message: Some(e.to_string()),
+                        },
+                    }
+                }
+                Err(_) => TagCidResult {
+                    cid: pair.cid,
+                    success: false,
+                    error_message: Some(
+                        "CID is not indexed so it cannot be tagged".to_string(),
+                    ),
+                },
+            };
+            results.push(result);
+        }
+
+        Ok(Response::new(BatchTagCidReply { results }))
+    }
+
+    async fn batch_untag_cid(
+        &self,
+        r: Request<BatchTagCidRequest>,
+    ) -> Result<Response<BatchTagCidReply>, Status> {
+        let runtime = &self.runtime;
+        let req = r.into_inner();
+        let mut results = Vec::new();
+
+        for pair in req.cid_tag_pairs {
+            let result = match runtime.indexed_file(pair.cid.clone()).await {
+                Ok(_) => {
+                    match runtime.untag_cid(pair.cid.clone(), pair.tags).await {
+                        Ok(_) => TagCidResult {
+                            cid: pair.cid,
+                            success: true,
+                            error_message: None,
+                        },
+                        Err(e) => TagCidResult {
+                            cid: pair.cid,
+                            success: false,
+                            error_message: Some(e.to_string()),
+                        },
+                    }
+                }
+                Err(_) => TagCidResult {
+                    cid: pair.cid,
+                    success: false,
+                    error_message: Some(
+                        "CID is not indexed so it cannot be untagged"
+                            .to_string(),
+                    ),
+                },
+            };
+            results.push(result);
+        }
+
+        Ok(Response::new(BatchTagCidReply { results }))
     }
 
     type ContentAtCidStream =

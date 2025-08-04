@@ -15,12 +15,13 @@ use dotenv::dotenv;
 use futures_util::{StreamExt, TryStreamExt};
 use hooya::proto::{
     control_client::ControlClient, AllFilesRequest, AllTagsRequest,
-    CidInfoRequest, CidThumbnailRequest, CompleteUploadRequest,
-    ContentAtCidRequest, ForgetFileRequest, GetChatChannelsRequest,
-    GetChatHistoryRequest, GetUploadStatusRequest, InstanceEventsRequest,
-    LocalFilePageRequest, SearchQuery, SearchRequest, SendChatMessageRequest,
-    StartUploadSessionRequest, SuggestTagRequest, SystemInfoRequest, Tag,
-    TagQuery, TagsRequest, Thumbnail, UploadChunkRequest,
+    BatchTagCidRequest, CidInfoRequest, CidTagPair, CidThumbnailRequest,
+    CompleteUploadRequest, ContentAtCidRequest, ForgetFileRequest,
+    GetChatChannelsRequest, GetChatHistoryRequest, GetUploadStatusRequest,
+    InstanceEventsRequest, LocalFilePageRequest, SearchQuery, SearchRequest,
+    SendChatMessageRequest, StartUploadSessionRequest, SuggestTagRequest,
+    SystemInfoRequest, Tag, TagQuery, TagsRequest, Thumbnail,
+    UploadChunkRequest,
 };
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
@@ -201,6 +202,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/login", post(login))
         .route("/tag-cid/:cid", patch(tag_cid))
         .route("/tag-cid/:cid", delete(untag_cid))
+        .route("/batch-tag-cid", patch(batch_tag_cid))
+        .route("/batch-untag-cid", delete(batch_untag_cid))
         .route("/start-upload", post(start_upload))
         .route("/upload-chunk/:upload_id/:chunk_index", put(upload_chunk))
         .route("/complete-upload/:upload_id", post(complete_upload))
@@ -638,6 +641,108 @@ async fn untag_cid(
     {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to untag CID")
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CidTagsData {
+    cid: String,
+    tags: Vec<TagData>,
+}
+
+async fn batch_tag_cid(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Json(cid_tags_list): Json<Vec<CidTagsData>>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e;
+    }
+
+    let mut cid_tag_pairs = Vec::new();
+    for cid_tags in cid_tags_list {
+        let cid = match decode_cid_param(&cid_tags.cid) {
+            Ok(cid) => cid,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid CID").into_response()
+            }
+        };
+
+        let tags: Vec<Tag> = cid_tags
+            .tags
+            .into_iter()
+            .map(|t| Tag {
+                namespace: if !t.namespace.is_empty() {
+                    t.namespace
+                } else {
+                    "general".to_string()
+                },
+                descriptor: t.descriptor,
+            })
+            .collect();
+
+        cid_tag_pairs.push(CidTagPair { cid, tags });
+    }
+
+    match state
+        .client
+        .batch_tag_cid(BatchTagCidRequest { cid_tag_pairs })
+        .await
+    {
+        Ok(response) => Json(response.into_inner()).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to batch tag CIDs",
+        )
+            .into_response(),
+    }
+}
+
+async fn batch_untag_cid(
+    State(mut state): State<AState>,
+    headers: HeaderMap,
+    Json(cid_tags_list): Json<Vec<CidTagsData>>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, headers) {
+        return e;
+    }
+
+    let mut cid_tag_pairs = Vec::new();
+    for cid_tags in cid_tags_list {
+        let cid = match decode_cid_param(&cid_tags.cid) {
+            Ok(cid) => cid,
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid CID").into_response()
+            }
+        };
+
+        let tags: Vec<Tag> = cid_tags
+            .tags
+            .into_iter()
+            .map(|t| Tag {
+                namespace: if !t.namespace.is_empty() {
+                    t.namespace
+                } else {
+                    "general".to_string()
+                },
+                descriptor: t.descriptor,
+            })
+            .collect();
+
+        cid_tag_pairs.push(CidTagPair { cid, tags });
+    }
+
+    match state
+        .client
+        .batch_untag_cid(BatchTagCidRequest { cid_tag_pairs })
+        .await
+    {
+        Ok(response) => Json(response.into_inner()).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to batch untag CIDs",
+        )
             .into_response(),
     }
 }
