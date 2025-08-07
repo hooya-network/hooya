@@ -297,6 +297,89 @@ impl Runtime {
         Ok(())
     }
 
+    // batch methods that process multiple CIDs in a single transaction
+    pub async fn batch_tag_cids(
+        &self,
+        cid_tag_pairs: Vec<(Vec<u8>, Vec<Tag>)>,
+    ) -> Result<Vec<bool>> {
+        if cid_tag_pairs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // collect all unique tags and ensure they exist in vocabulary
+        let mut seen_tags = std::collections::HashSet::new();
+        let mut all_tags = Vec::new();
+        for (_, tags) in &cid_tag_pairs {
+            for tag in tags {
+                let key = (&tag.namespace, &tag.descriptor);
+                if seen_tags.insert(key) {
+                    all_tags.push(tag.clone());
+                }
+            }
+        }
+
+        if !all_tags.is_empty() {
+            self.db.new_tag_vocab(all_tags).await?;
+        }
+
+        // build all tag map rows
+        let mut all_tag_maps = Vec::new();
+        let mut results = Vec::new();
+
+        for (cid, tags) in cid_tag_pairs {
+            match self.make_tag_map_rows(cid.clone(), tags).await {
+                Ok(tag_maps) => {
+                    all_tag_maps.extend(tag_maps);
+                    results.push(true);
+                }
+                Err(_) => {
+                    results.push(false);
+                }
+            }
+        }
+
+        // batch insert all tag maps in one transaction
+        if !all_tag_maps.is_empty() {
+            self.db.batch_new_tag_maps(&all_tag_maps).await?;
+        }
+
+        Ok(results)
+    }
+
+    pub async fn batch_untag_cids(
+        &self,
+        cid_tag_pairs: Vec<(Vec<u8>, Vec<Tag>)>,
+    ) -> Result<Vec<bool>> {
+        if cid_tag_pairs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // collect all removals to be done in one transaction
+        let mut all_removals = Vec::new();
+        let mut results = Vec::new();
+
+        for (cid, tags) in cid_tag_pairs {
+            match self.db.lookup_tag_id(tags).await {
+                Ok(tag_rows) => {
+                    for tag_row in tag_rows {
+                        all_removals.push((cid.clone(), tag_row.id));
+                    }
+                    results.push(true);
+                }
+                Err(_) => {
+                    results.push(false);
+                }
+            }
+        }
+
+        // batch remove all tag maps in one transaction
+        if !all_removals.is_empty() {
+            self.db.batch_remove_tag_maps(&all_removals).await?;
+        }
+
+        Ok(results)
+    }
+
     async fn make_tag_map_rows(
         &self,
         cid: Vec<u8>,
@@ -644,9 +727,27 @@ impl Runtime {
         mimetype: &str,
     ) -> Result<()> {
         let cid_store_path = self.derive_store_path(&cid)?;
+        let cid_hex = hex::encode(&cid);
 
-        let video_metadata =
-            crate::video::extract_video_metadata(&cid_store_path)?;
+        tracing::info!(
+            "processing video file: cid={}, mimetype={}, path={:?}",
+            cid_hex,
+            mimetype,
+            cid_store_path
+        );
+
+        let video_metadata = crate::video::extract_video_metadata(
+            &cid_store_path,
+        )
+        .map_err(|e| {
+            tracing::error!(
+                "failed to extract video metadata for cid={}: {}",
+                cid_hex,
+                e
+            );
+
+            e
+        })?;
         let video_width = video_metadata.width;
         let video_height = video_metadata.height;
         let video_duration = video_metadata.duration;
@@ -898,31 +999,42 @@ impl Runtime {
                 thumbnails,
             }))
         } else if mimetype.starts_with("video") {
-            let video_row = self.db.video_row(cid.clone()).await?;
-            let thumbnails = self
-                .db
-                .thumbnails_by_source_cid(cid)
-                .await?
-                .iter()
-                .map(|t| Thumbnail {
-                    cid: t.cid.clone(),
-                    size: t.size,
-                    mimetype: t.mimetype.clone(),
-                    source_cid: t.source_cid.clone(),
-                    height: t.height,
-                    width: t.width,
-                    aspect_ratio: t.ratio as f32,
-                    is_animated: t.is_animated,
-                })
-                .collect();
+            match self.db.video_row(cid.clone()).await {
+                Ok(video_row) => {
+                    let thumbnails = self
+                        .db
+                        .thumbnails_by_source_cid(cid.clone())
+                        .await?
+                        .iter()
+                        .map(|t| Thumbnail {
+                            cid: t.cid.clone(),
+                            size: t.size,
+                            mimetype: t.mimetype.clone(),
+                            source_cid: t.source_cid.clone(),
+                            height: t.height,
+                            width: t.width,
+                            aspect_ratio: t.ratio as f32,
+                            is_animated: t.is_animated,
+                        })
+                        .collect();
 
-            Some(crate::proto::file::ExtFile::Video(crate::proto::Video {
-                height: video_row.height.into(),
-                width: video_row.width.into(),
-                aspect_ratio: video_row.ratio as f32,
-                duration: video_row.duration as f32,
-                thumbnails,
-            }))
+                    Some(crate::proto::file::ExtFile::Video(
+                        crate::proto::Video {
+                            height: video_row.height.into(),
+                            width: video_row.width.into(),
+                            aspect_ratio: video_row.ratio as f32,
+                            duration: video_row.duration as f32,
+                            thumbnails,
+                        },
+                    ))
+                }
+                Err(e) => {
+                    let cid_hex = hex::encode(&cid);
+                    tracing::warn!("video processing failed for cid={}, returning basic file info: {}", cid_hex, e);
+                    // return None instead of propagating error - file still exists, just no extended info
+                    None
+                }
+            }
         } else {
             None
         };
@@ -955,6 +1067,26 @@ impl Runtime {
     /// Get the operator name from configuration
     pub fn operator_name(&self) -> &str {
         &self.config.instance.operator
+    }
+
+    pub fn move_to_forgotten(&self, cid: &[u8]) -> Result<()> {
+        let current_path = self.derive_store_path(cid)?;
+
+        if !current_path.exists() {
+            return Err(anyhow::anyhow!("File does not exist"));
+        }
+
+        let forgotten_path = self.derive_forgotten_path(cid)?;
+
+        // ensure forgotten directory exists
+        if let Some(parent) = forgotten_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // move file to forgotten directory
+        std::fs::rename(&current_path, &forgotten_path)?;
+
+        Ok(())
     }
 
     pub fn derive_forgotten_path(&self, cid: &[u8]) -> Result<PathBuf> {

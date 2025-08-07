@@ -13,18 +13,22 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Cache
-      uses: actions/cache@v2
-      with:
-        path: |
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: actions/checkout@v4
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@main
+
+    - name: Enable Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@main
 
     - name: Build
-      run: cargo build
+      run: nix develop --command cargo build
     - name: Clippy
-      run: cargo clippy
+      run: nix develop --command cargo clippy
     - name: Format
-      run: cargo fmt --check
+      run: nix develop --command cargo fmt --check
+    - name: Unit Tests
+      run: nix develop --command just unittests
+    - name: Integration Tests
+      run: nix develop --command just itests
 

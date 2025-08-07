@@ -52,11 +52,14 @@
               extensions = [ "rust-src" ];
             })
             openssl
+            cargo-nextest
             pkg-config
             ffmpeg
             git
             protobuf
             gtk4
+            just
+            k3d
           ] ++ lib.optional isDarwin (with darwin.apple_sdk.frameworks; [ Security CoreServices ]);
           RUST_SRC_PATH="${pkgs.rust-bin.stable."1.88.0".default}/lib/rustlib/src/rust/library";
         };

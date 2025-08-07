@@ -47,7 +47,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use tracing::{event, Level};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-const MAX_CHUNK_SIZE: u32 = 10 * 1024 * 1024;
+const MAX_CHUNK_SIZE: u32 = 4 * 1024 * 1024;
 
 struct UploadSession {
     id: String,
@@ -250,32 +250,43 @@ impl Control for IControl {
         let runtime = &self.runtime;
         let req = r.into_inner();
         let mut results = Vec::new();
+        let mut valid_pairs = Vec::new();
 
+        // first, check which CIDs are indexed
         for pair in req.cid_tag_pairs {
-            let result = match runtime.indexed_file(pair.cid.clone()).await {
+            match runtime.indexed_file(pair.cid.clone()).await {
                 Ok(_) => {
-                    match runtime.tag_cid(pair.cid.clone(), pair.tags).await {
-                        Ok(_) => TagCidResult {
-                            cid: pair.cid,
-                            success: true,
-                            error_message: None,
-                        },
-                        Err(e) => TagCidResult {
-                            cid: pair.cid,
-                            success: false,
-                            error_message: Some(e.to_string()),
-                        },
+                    valid_pairs.push((pair.cid.clone(), pair.tags.clone()));
+                    results.push(TagCidResult {
+                        cid: pair.cid,
+                        success: true,
+                        error_message: None,
+                    });
+                }
+                Err(_) => {
+                    results.push(TagCidResult {
+                        cid: pair.cid,
+                        success: false,
+                        error_message: Some(
+                            "CID is not indexed so it cannot be tagged"
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+
+        // batch process all valid CIDs in a single transaction
+        if !valid_pairs.is_empty() {
+            if let Err(e) = runtime.batch_tag_cids(valid_pairs).await {
+                // on batch failure, mark all valid results as failed
+                for result in results.iter_mut() {
+                    if result.success {
+                        result.success = false;
+                        result.error_message = Some(e.to_string());
                     }
                 }
-                Err(_) => TagCidResult {
-                    cid: pair.cid,
-                    success: false,
-                    error_message: Some(
-                        "CID is not indexed so it cannot be tagged".to_string(),
-                    ),
-                },
-            };
-            results.push(result);
+            }
         }
 
         Ok(Response::new(BatchTagCidReply { results }))
@@ -288,33 +299,43 @@ impl Control for IControl {
         let runtime = &self.runtime;
         let req = r.into_inner();
         let mut results = Vec::new();
+        let mut valid_pairs = Vec::new();
 
+        // first, check which CIDs are indexed
         for pair in req.cid_tag_pairs {
-            let result = match runtime.indexed_file(pair.cid.clone()).await {
+            match runtime.indexed_file(pair.cid.clone()).await {
                 Ok(_) => {
-                    match runtime.untag_cid(pair.cid.clone(), pair.tags).await {
-                        Ok(_) => TagCidResult {
-                            cid: pair.cid,
-                            success: true,
-                            error_message: None,
-                        },
-                        Err(e) => TagCidResult {
-                            cid: pair.cid,
-                            success: false,
-                            error_message: Some(e.to_string()),
-                        },
+                    valid_pairs.push((pair.cid.clone(), pair.tags.clone()));
+                    results.push(TagCidResult {
+                        cid: pair.cid,
+                        success: true,
+                        error_message: None,
+                    });
+                }
+                Err(_) => {
+                    results.push(TagCidResult {
+                        cid: pair.cid,
+                        success: false,
+                        error_message: Some(
+                            "CID is not indexed so it cannot be untagged"
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+
+        // batch process all valid CIDs in a single transaction
+        if !valid_pairs.is_empty() {
+            if let Err(e) = runtime.batch_untag_cids(valid_pairs).await {
+                // on batch failure, mark all valid results as failed
+                for result in results.iter_mut() {
+                    if result.success {
+                        result.success = false;
+                        result.error_message = Some(e.to_string());
                     }
                 }
-                Err(_) => TagCidResult {
-                    cid: pair.cid,
-                    success: false,
-                    error_message: Some(
-                        "CID is not indexed so it cannot be untagged"
-                            .to_string(),
-                    ),
-                },
-            };
-            results.push(result);
+            }
         }
 
         Ok(Response::new(BatchTagCidReply { results }))
@@ -1162,6 +1183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .accept_http1(true)
+        .max_frame_size(Some(MAX_CHUNK_SIZE))
         .add_service(ControlServer::new(IControl {
             runtime: Arc::new(Runtime {
                 filestore_path: filestore_path.clone(),
@@ -1215,71 +1237,8 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
 
     let discv5_config = discv5::ConfigBuilder::new(listen_config).build();
 
-    // build ENR using advertise_addresses or a peer
-    let enr = if !config.networking_config.advertise_addresses.is_empty() {
-        // case 1: advertise addresses provided, use them directly
-        let advertise_ips: Result<Vec<std::net::IpAddr>, _> = config
-            .networking_config
-            .advertise_addresses
-            .iter()
-            .map(|addr| addr.parse())
-            .collect();
-
-        let advertise_ips = advertise_ips
-            .map_err(|e| anyhow::anyhow!("Invalid advertise address: {}", e))?;
-
-        hooya::address_discovery::build_enr_from_addresses(
-            &advertise_ips,
-            &config.networking_config,
-            &config.discv5_key,
-        )?
-    } else {
-        // case 2: no advertise addresses so query someone
-        let bootstrap_peers = hooya::address_discovery::get_bootstrap_peers(
-            &config.addr_book,
-            &config.networking_config.discovery,
-        )
-        .await?;
-
-        if bootstrap_peers.is_empty() {
-            return Err(anyhow::anyhow!(
-                "no bootstrap peers available for address discovery"
-            ));
-        }
-
-        let dialable_addresses = hooya::address_discovery::run_discovery_phase(
-            &config.networking_config,
-            config.libp2p_key.clone(),
-            bootstrap_peers,
-        )
-        .await?;
-
-        if dialable_addresses.is_empty() {
-            return Err(anyhow::anyhow!("no dialable addresses"));
-        }
-
-        // extract IPs from discovered multiaddrs
-        let discovered_ips: Vec<std::net::IpAddr> = dialable_addresses
-            .iter()
-            .filter_map(|addr| {
-                addr.iter().find_map(|protocol| match protocol {
-                    libp2p::multiaddr::Protocol::Ip4(ip) => {
-                        Some(std::net::IpAddr::V4(ip))
-                    }
-                    libp2p::multiaddr::Protocol::Ip6(ip) => {
-                        Some(std::net::IpAddr::V6(ip))
-                    }
-                    _ => None,
-                })
-            })
-            .collect();
-
-        hooya::address_discovery::build_enr_from_addresses(
-            &discovered_ips,
-            &config.networking_config,
-            &config.discv5_key,
-        )?
-    };
+    // build startup ENR with no addresses - will be updated via PING/PONG
+    let enr = hooya::address_discovery::build_startup_enr(&config.discv5_key)?;
 
     tracing::info!(local_enr = enr.to_string(), "discv5 starting");
 
@@ -1316,8 +1275,6 @@ async fn run_mesh_network(config: MeshNetworkConfig) -> anyhow::Result<()> {
             tracing::info!(node_id = %bootstrap_node_id, "added DNS bootstrap node to discv5 routing table");
         }
     }
-
-    // peer discovery is now handled by continuous discovery in mesh network event loop
 
     // create libp2p gossipsub behavior
     let gossipsub_config = ConfigBuilder::default()

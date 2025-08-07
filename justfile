@@ -1,4 +1,5 @@
-# hooya project justfile
+default:
+    @just --list
 
 # run the web proxy server
 web-proxy *ARGS:
@@ -28,9 +29,16 @@ build:
 build-release:
     cargo build --workspace --release
 
-# run tests
-test:
-    cargo test --workspace
+unittests:
+    cargo test --workspace --lib --exclude hooya-itest
+
+# build local docker images for testing
+build-test-images:
+    docker build --target hooyad -t hooyad:itests .
+    docker build --target hooya-web-proxy -t hooya-web-proxy:itests .
+
+itests: build-test-images
+    cargo test -p hooya-itest
 
 # check all code compiles
 check:

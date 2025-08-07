@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tonic::transport::Channel;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 #[derive(Clone)]
@@ -217,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/chat/send", post(send_chat_message))
         .route("/api/system-info", get(system_info))
         .layer(cors_layer)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind::<String>(
@@ -1302,12 +1303,16 @@ async fn cid_tags(
 
     let mut client = state.client.clone();
 
-    let tags: Vec<Tag> = client
-        .tags(TagsRequest { cid })
-        .await
-        .unwrap()
-        .into_inner()
-        .tags;
+    let tags: Vec<Tag> = match client.tags(TagsRequest { cid }).await {
+        Ok(response) => response.into_inner().tags,
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Failed to get tags: {}", e.message()),
+            )
+                .into_response()
+        }
+    };
 
     if let Err(e) = check_file_visibility(&tags, authenticated) {
         return e;
@@ -1511,7 +1516,16 @@ async fn suggest_tag(
         visibility_filter: visibility_filter.0,
     };
 
-    let resp = client.suggest_tag(query).await.unwrap().into_inner();
+    let resp = match client.suggest_tag(query).await {
+        Ok(response) => response.into_inner(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to suggest tags: {}", e.message()),
+            )
+                .into_response()
+        }
+    };
 
     axum::Json(resp).into_response()
 }
@@ -1559,7 +1573,16 @@ async fn suggest_tag_with_query(
         visibility_filter: visibility_filter.0,
     };
 
-    let resp = client.suggest_tag(query).await.unwrap().into_inner();
+    let resp = match client.suggest_tag(query).await {
+        Ok(response) => response.into_inner(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to suggest tags: {}", e.message()),
+            )
+                .into_response()
+        }
+    };
 
     let tag_constraints = resp.tag_constraints;
     let tag_suggestion = resp
@@ -1737,11 +1760,14 @@ async fn upload_chunk(
             };
             Json(body).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to upload chunk: {e}"),
-        )
-            .into_response(),
+        Err(e) => {
+            info!("{e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to upload chunk: {e}"),
+            )
+        }
+        .into_response(),
     }
 }
 

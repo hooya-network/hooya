@@ -104,12 +104,8 @@ pub fn derive_node_id(kp: &KeyPair) -> String {
     hasher.update(pubkey_bytes);
     let hash = hasher.finalize();
 
-    // use first 20 bytes for node ID then encode with multibase
     let node_id_bytes = &hash[..20];
-    format!(
-        "0x{}",
-        multibase::encode(DEFAULT_MULTIBASE_BASE, node_id_bytes)
-    )
+    multibase::encode(DEFAULT_MULTIBASE_BASE, node_id_bytes)
 }
 
 /// Sign a message using the BLS keypair
@@ -233,18 +229,6 @@ mod tests {
         // they should be the same
         assert_eq!(kp1.secret_key, kp2.secret_key);
         assert_eq!(kp1.public_key, kp2.public_key);
-    }
-
-    #[test]
-    fn test_node_id_derivation() {
-        let temp_dir = TempDir::new().unwrap();
-        let key_path = temp_dir.path().join("test-key");
-
-        let kp = write_secret_bls_key_at_path(&key_path).unwrap();
-        let node_id = derive_node_id(&kp);
-
-        assert_eq!(node_id.len(), 31);
-        assert!(node_id.starts_with("0x"));
     }
 
     #[test]

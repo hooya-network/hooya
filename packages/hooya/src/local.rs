@@ -193,6 +193,12 @@ impl Db {
     }
 
     pub async fn new_tag_vocab(&self, tags: Vec<Tag>) -> Result<()> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.executor.begin().await?;
+
         for t in tags {
             sqlx::query(
                 r#"
@@ -201,14 +207,21 @@ impl Db {
             )
             .bind(t.namespace)
             .bind(t.descriptor)
-            .execute(&self.executor)
+            .execute(&mut *tx)
             .await?;
         }
 
+        tx.commit().await?;
         Ok(())
     }
 
     pub async fn new_tag_map(&self, tag_maps: &[TagMapRow]) -> Result<()> {
+        if tag_maps.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.executor.begin().await?;
+
         for t in tag_maps {
             sqlx::query(
                 r#"
@@ -219,10 +232,11 @@ impl Db {
             .bind(t.tag_id)
             .bind(t.added.clone())
             .bind(t.reason)
-            .execute(&self.executor)
+            .execute(&mut *tx)
             .await?;
         }
 
+        tx.commit().await?;
         Ok(())
     }
 
@@ -231,6 +245,12 @@ impl Db {
         file_cid: Vec<u8>,
         tag_ids: &[i32],
     ) -> Result<()> {
+        if tag_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.executor.begin().await?;
+
         for tag_id in tag_ids {
             sqlx::query(
                 r#"
@@ -238,10 +258,11 @@ impl Db {
             )
             .bind(&file_cid)
             .bind(tag_id)
-            .execute(&self.executor)
+            .execute(&mut *tx)
             .await?;
         }
 
+        tx.commit().await?;
         Ok(())
     }
 
@@ -326,14 +347,14 @@ impl Db {
         );
         let tags_len = tags.len();
         for (i, t) in tags.into_iter().enumerate() {
-            if i < tags_len - 1 {
-                builder.push(", ");
-            }
             builder.push("(");
             builder.push_bind(t.namespace);
             builder.push(",");
             builder.push_bind(t.descriptor);
             builder.push(")");
+            if i < tags_len - 1 {
+                builder.push(", ");
+            }
         }
         builder.push(")");
         let query = builder.build();
@@ -1188,6 +1209,60 @@ impl Db {
             .bind(cid)
             .execute(&self.executor)
             .await?;
+        Ok(())
+    }
+
+    // batch methods that handle multiple operations in a single transaction
+    pub async fn batch_new_tag_maps(
+        &self,
+        all_tag_maps: &[TagMapRow],
+    ) -> Result<()> {
+        if all_tag_maps.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.executor.begin().await?;
+
+        for t in all_tag_maps {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO TagMap (FileCid, TagId, Added, Reason) VALUES
+                (?, ?, ?, ?)"#,
+            )
+            .bind(t.file_cid.clone())
+            .bind(t.tag_id)
+            .bind(t.added.clone())
+            .bind(t.reason)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn batch_remove_tag_maps(
+        &self,
+        removals: &[(Vec<u8>, i32)],
+    ) -> Result<()> {
+        if removals.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.executor.begin().await?;
+
+        for (file_cid, tag_id) in removals {
+            sqlx::query(
+                r#"
+                DELETE FROM TagMap WHERE FileCid = ? AND TagId = ?"#,
+            )
+            .bind(file_cid)
+            .bind(tag_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 }

@@ -13,3 +13,6 @@ panic = 'abort'
 incremental = false
 overflow-checks = true
 # strip = 'symbols'
+
+# [patch.crates-io]
+# discv5 = { path = "../discv5" }

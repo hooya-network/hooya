@@ -17,9 +17,10 @@ use libp2p::{
     Swarm,
 };
 use prost::Message;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{event, Level};
+use tracing::{event, warn, Level};
 
 /// Outgoing message types that can be sent over the mesh
 #[derive(Debug, Clone)]
@@ -145,6 +146,12 @@ impl MeshNetwork {
 
         let discv5_events = self.setup_discv5_events(&discv5).await?;
 
+        // perform startup address discovery via PING/PONG and wait for SocketUpdated
+        self.discovery_phase(&discv5, discv5_events).await?;
+
+        // get fresh event stream after discovery
+        let discv5_events = self.setup_discv5_events(&discv5).await?;
+
         // attempt to reconnect to known peers from previous sessions
         self.reconnect_to_known_peers(&mut swarm).await;
 
@@ -228,10 +235,7 @@ impl MeshNetwork {
                             self.handle_gossipsub_event(gossipsub_event).await;
                         }
                         SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(identify_event)) => {
-                            self.handle_identify_event(identify_event).await;
-                        }
-                        SwarmEvent::Behaviour(MeshBehaviorEvent::Ping(_ping_event)) => {
-                            // handle ping events if needed
+                            self.handle_identify_event(identify_event, &discv5).await;
                         }
                         SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns_event)) => {
                             self.handle_mdns_event(mdns_event, &mut swarm).await;
@@ -368,15 +372,61 @@ impl MeshNetwork {
         }
     }
 
-    async fn handle_identify_event(&self, event: identify::Event) {
-        if let identify::Event::Received {
+    async fn handle_identify_event(
+        &self,
+        event: identify::Event,
+        discv5: &Discv5,
+    ) {
+        let identify::Event::Received {
             peer_id,
-            info: _,
+            info,
             connection_id: _,
         } = event
-        {
-            event!(Level::DEBUG, %peer_id, "identified peer");
+        else {
+            return;
+        };
+
+        event!(Level::DEBUG, %peer_id, "identified peer");
+
+        // only update our ENR if mDNS is enabled and we have no external address yet
+        if !self.networking_config.discovery.mdns.enabled {
+            return;
         }
+
+        let local_enr = discv5.local_enr();
+        if local_enr.ip4().is_some() || local_enr.ip6().is_some() {
+            return; // already have an address
+        }
+
+        // extract our external IP from the observed address in identify info
+        let ip = match crate::address_discovery::extract_ip_from_multiaddr(
+            &info.observed_addr,
+        ) {
+            Some(ip) => ip,
+            None => return,
+        };
+
+        // get our discv5 UDP port from config
+        let (ipv4_config, ipv6_config) =
+            match self.networking_config.get_discv5_addresses() {
+                Ok(config) => config,
+                Err(_) => return,
+            };
+
+        let udp_port = match ip {
+            std::net::IpAddr::V4(_) => ipv4_config.map(|(_, port)| port),
+            std::net::IpAddr::V6(_) => ipv6_config.map(|(_, port)| port),
+        };
+
+        let udp_port = match udp_port {
+            Some(port) => port,
+            None => return,
+        };
+
+        let socket = SocketAddr::new(ip, udp_port);
+        discv5.update_local_enr_socket(socket, false);
+        let enr = discv5.local_enr();
+        event!(Level::INFO, %enr, "updated enr after mdns identify");
     }
 
     async fn handle_mdns_event(
@@ -391,7 +441,7 @@ impl MeshNetwork {
                         && swarm.connected_peers().count()
                             < self.networking_config.max_peers
                     {
-                        event!(Level::INFO, %peer_id, %multiaddr, "discovered mDNS peer (no ENR - dial only)");
+                        event!(Level::INFO, %peer_id, %multiaddr, "discovered mDNS peer");
 
                         // dial the discovered peer directly without adding to addr_book
                         // since mDNS doesn't provide ENRs, we can't store them properly
@@ -575,5 +625,86 @@ impl MeshNetwork {
             max_peers = self.networking_config.max_peers,
             "mesh network status"
         );
+    }
+
+    /// discovery phase: ping bootstrap nodes and wait for SocketUpdated event
+    async fn discovery_phase(
+        &mut self,
+        discv5: &Discv5,
+        _discv5_events: mpsc::Receiver<Discv5Event>,
+    ) -> Result<()> {
+        event!(Level::INFO, "starting address discovery phase");
+
+        // wait for SocketUpdated event or timeout after reasonable period
+        let _discovery_timeout = tokio::time::Duration::from_secs(30);
+
+        // try once for bootstrap discovery
+        if let Some((ip, port)) = self.perform_startup_discovery(discv5).await {
+            let socket = SocketAddr::new(ip, port);
+            discv5.update_local_enr_socket(socket, false);
+        } else if self.networking_config.discovery.mdns.enabled {
+            // if mDNS is enabled and no bootstrap peers, skip the blocking loop
+            // and let mDNS + identify handle address discovery in the main event loop
+            event!(Level::INFO, "no bootstrap peers available, relying on mDNS for address discovery");
+        } else {
+            // no mDNS and no bootstrap peers - this is a problem
+            return Err(anyhow::anyhow!("No discovery method available: no bootstrap peers and mDNS disabled"));
+        }
+
+        Ok(())
+    }
+
+    async fn perform_startup_discovery(
+        &self,
+        discv5: &Discv5,
+    ) -> Option<(IpAddr, u16)> {
+        let bootstrap_peers =
+            match crate::address_discovery::get_bootstrap_peers(
+                &self.addr_book,
+                &self.networking_config.discovery,
+            )
+            .await
+            {
+                Ok(peers) => peers,
+                Err(e) => {
+                    event!(Level::WARN, %e, "failed to get bootstrap peers for discovery");
+                    return None;
+                }
+            };
+
+        if bootstrap_peers.is_empty() {
+            event!(
+                Level::INFO,
+                "no bootstrap peers available for startup discovery"
+            );
+            return None;
+        }
+
+        // ping the first available bootstrap peer to discover our external address
+        for (peer_id, _multiaddr) in bootstrap_peers.iter().take(3) {
+            // convert peer_id back to node_id for discv5 ping
+            if let Some(peer_info) = self.addr_book.get_peers().get(peer_id) {
+                let enr = peer_info.enr.clone();
+                let node_id = enr.node_id();
+                event!(Level::INFO, %peer_id, %node_id, "pinging bootstrap peer for address discovery");
+                if let Err(e) = discv5.add_enr(enr.clone()) {
+                    warn!("failed to add enr to routing table: {}", e);
+                }
+
+                match discv5.send_ping(enr).await {
+                    Ok(pong) => {
+                        let ip = pong.ip;
+                        let port = pong.port;
+                        event!(Level::INFO, %ip, %port, "discovered external address");
+                        return Some((ip, port));
+                    }
+                    Err(e) => {
+                        event!(Level::WARN, %e, %peer_id, "failed to query bootstrap peer");
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
