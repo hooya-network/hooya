@@ -1,4 +1,10 @@
 use once_cell::sync::Lazy;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseType {
+    SQLite,
+    PostgreSQL,
+}
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -48,6 +54,25 @@ impl RuntimeConfig {
 
     pub fn sqlite_uri(&self) -> String {
         format!("sqlite://{}", self.sqlite_path().to_string_lossy())
+    }
+
+    pub fn postgres_uri(
+        &self,
+        host: &str,
+        port: u16,
+        database: &str,
+        user: &str,
+        password: &str,
+    ) -> String {
+        format!("postgresql://{user}:{password}@{host}:{port}/{database}")
+    }
+
+    pub fn database_type_from_uri(uri: &str) -> DatabaseType {
+        if uri.starts_with("postgresql://") || uri.starts_with("postgres://") {
+            DatabaseType::PostgreSQL
+        } else {
+            DatabaseType::SQLite
+        }
     }
 
     pub fn web_password_hash_path(&self) -> PathBuf {

@@ -7,14 +7,13 @@ ENV OPENSSL_DIR=/usr
 RUN cargo build --bin hooyad --bin hooya-web-proxy --release
 
 FROM alpine as hooyad
-RUN apk add --no-cache ffmpeg ca-certificates \
-      && ffmpeg -version \
-      && ffmpeg -codecs | head -20  # show available codecs
+RUN apk add --no-cache openssl ffmpeg ca-certificates
 COPY --from=builder /wd/target/release/hooyad /
 EXPOSE 8531
 CMD ["/hooyad"]
 
-FROM scratch as hooya-web-proxy
+FROM alpine as hooya-web-proxy
+RUN apk add --no-cache openssl
 COPY --from=builder /wd/target/release/hooya-web-proxy /
 EXPOSE 8532
 CMD ["/hooya-web-proxy"]

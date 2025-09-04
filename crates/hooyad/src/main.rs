@@ -1,6 +1,8 @@
+use anyhow::Context;
 use clap::{command, value_parser, Arg};
 use dotenv::dotenv;
 use futures_util::Stream;
+use hooya::local::DatabaseBackend;
 use hooya::proto::{
     control_server::{Control, ControlServer},
     AllFilesReply, AllFilesRequest, AllTagsReply, AllTagsRequest,
@@ -33,7 +35,6 @@ use libp2p::{
 };
 use rand::distributions::DistString;
 use sqlx::migrate::MigrateDatabase;
-use sqlx::{Sqlite, SqlitePool};
 use std::{
     collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, time::Instant,
 };
@@ -62,13 +63,13 @@ struct UploadSession {
     started_at: Instant,
 }
 
-struct IControl {
-    pub runtime: Arc<Runtime>,
+struct IControl<T: hooya::local::DatabaseBackend + 'static> {
+    pub runtime: Arc<Runtime<T>>,
     pub upload_sessions: Arc<Mutex<HashMap<String, UploadSession>>>,
 }
 
 #[tonic::async_trait]
-impl Control for IControl {
+impl<T: hooya::local::DatabaseBackend + 'static> Control for IControl<T> {
     async fn version(
         &self,
         _: Request<VersionRequest>,
@@ -1052,8 +1053,12 @@ impl Control for IControl {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
     let matches = command!()
@@ -1098,29 +1103,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filestore_path =
         matches.get_one::<PathBuf>("filestore").unwrap().clone();
 
-    let config = hooya_config::RuntimeConfig::new(filestore_path.clone());
-    let default_db_uri = config.sqlite_uri();
+    let runtime_config =
+        hooya_config::RuntimeConfig::new(filestore_path.clone());
+    let default_db_uri = runtime_config.sqlite_uri();
 
     // Create filestore structure
-    config.ensure_filestore_structure()?;
+    runtime_config.ensure_filestore_structure()?;
+
+    // Load HooyaConfig
+    let hooya_config = runtime_config.load_hooya_config()?;
 
     let db_uri = matches
         .get_one::<String>("db-uri")
         .unwrap_or(&default_db_uri);
 
-    let mut should_init = false;
-    // TODO Match on URI for different DB types
-    if !Sqlite::database_exists(db_uri).await.unwrap_or(false) {
-        Sqlite::create_database(db_uri).await?;
-        should_init = true;
+    let database_type =
+        hooya_config::RuntimeConfig::database_type_from_uri(db_uri);
+
+    match database_type {
+        hooya_config::DatabaseType::SQLite => {
+            use sqlx::{Sqlite, SqlitePool};
+            if !Sqlite::database_exists(db_uri).await.unwrap_or(false) {
+                Sqlite::create_database(db_uri).await.with_context(|| {
+                    format!("Failed to create SQLite database at: {db_uri}")
+                })?;
+            }
+            let pool =
+                SqlitePool::connect(db_uri).await.with_context(|| {
+                    format!(
+                        "Failed to connect to SQLite database at: {db_uri}"
+                    )
+                })?;
+            let mut db = hooya::backends::SqliteBackend { executor: pool };
+
+            // Always run init_tables - CREATE TABLE IF NOT EXISTS is idempotent
+            db.init_tables().await?;
+
+            run_server_with_db(db, matches, hooya_config, filestore_path)
+                .await?;
+        }
+        hooya_config::DatabaseType::PostgreSQL => {
+            use sqlx::PgPool;
+            let pool = PgPool::connect(db_uri).await.with_context(|| {
+                format!(
+                    "Failed to connect to PostgreSQL database at: {db_uri}"
+                )
+            })?;
+            let mut db = hooya::backends::PostgresBackend { executor: pool };
+
+            // Always run init_tables - CREATE TABLE IF NOT EXISTS is idempotent
+            db.init_tables().await?;
+
+            run_server_with_db(db, matches, hooya_config, filestore_path)
+                .await?;
+        }
     }
 
-    let mut db = hooya::local::Db::new(SqlitePool::connect(db_uri).await?);
+    Ok(())
+}
 
-    if should_init {
-        db.init_tables().await?;
-    }
-
+async fn run_server_with_db<T: hooya::local::DatabaseBackend + 'static>(
+    db: T,
+    matches: clap::ArgMatches,
+    hooya_config: hooya_config::HooyaConfig,
+    filestore_path: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (instance_events, _) = tokio::sync::broadcast::channel(1000);
 
     // create semaphore for CPU-bound tasks
@@ -1134,7 +1181,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_config =
         hooya_config::RuntimeConfig::new(filestore_path.clone());
     tracing::info!(path = filestore_path.to_str(), "filestore initialized");
-    let config = runtime_config.load_hooya_config()?;
 
     // create and load addr_book for mesh network
     let addrbook_path = runtime_config.addrbook_path();
@@ -1148,27 +1194,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create mesh network channel
     let (mesh_tx, mesh_rx) = tokio::sync::mpsc::channel(1000);
 
-    // create chatroom
+    // Create single chatroom instance shared between mesh network and runtime
     let chatroom = hooya::chatroom::Chatroom::new(filestore_path.clone());
+    let chatroom_arc = std::sync::Arc::new(chatroom);
 
     // initialize mesh network
     let instance_events_clone = instance_events.clone();
     let node_id = hooya::keys::derive_node_id(&node_keypair);
-    let networking_config = config.networking.clone();
-    let chatroom_arc = std::sync::Arc::new(chatroom);
+    let networking_config = hooya_config.networking.clone();
 
     // derive keys for mesh network
     let discv5_key = hooya::keys::derive_discv5_key(&node_keypair)?;
     let libp2p_key = hooya::keys::derive_libp2p_key(&node_keypair)?;
 
     let filestore_path_clone = filestore_path.clone();
+    let chatroom_arc_for_mesh = chatroom_arc.clone();
     tokio::spawn(async move {
         if let Err(e) = run_mesh_network(MeshNetworkConfig {
             node_id,
             networking_config,
             mesh_rx,
             instance_events: instance_events_clone,
-            chatroom: chatroom_arc,
+            chatroom: chatroom_arc_for_mesh,
             discv5_key,
             libp2p_key,
             filestore_path: filestore_path_clone,
@@ -1194,17 +1241,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )),
                 node_keypair,
                 consensus_keypair,
-                config,
+                config: hooya_config,
                 cpu_semaphore,
                 mesh_tx,
-                chatroom: hooya::chatroom::Chatroom::new(
-                    filestore_path.clone(),
-                ),
+                chatroom: chatroom_arc,
             }),
             upload_sessions: Arc::new(Mutex::new(HashMap::new())),
         }))
         .serve(matches.get_one::<String>("endpoint").unwrap().parse()?)
         .await?;
+
     Ok(())
 }
 

@@ -34,9 +34,9 @@ pub fn sanitize_filestore_path(
     Ok(target_file)
 }
 
-pub struct Runtime {
+pub struct Runtime<T: local::DatabaseBackend> {
     pub filestore_path: PathBuf,
-    pub db: local::Db,
+    pub db: T,
     pub instance_events: broadcast::Sender<InstanceEvent>,
     pub processing_cids: Arc<RwLock<HashSet<Vec<u8>>>>,
     pub node_keypair: KeyPair,
@@ -44,7 +44,7 @@ pub struct Runtime {
     pub config: HooyaConfig,
     pub cpu_semaphore: Semaphore,
     pub mesh_tx: mpsc::Sender<crate::mesh_network::OutgoingMessage>,
-    pub chatroom: Chatroom,
+    pub chatroom: Arc<Chatroom>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +82,7 @@ pub struct ChatEvent {
     pub signature: Vec<u8>,
 }
 
-impl Runtime {
+impl<T: local::DatabaseBackend> Runtime<T> {
     pub async fn import_basic_file_record(
         &self,
         cid: Vec<u8>,

@@ -25,7 +25,7 @@ impl ChatExpectations {
 
         if found {
             info!(
-                "✓ Found expected chat message from {} in {}: {}",
+                "Found expected chat message from {} in {}: {}",
                 node_id, channel, content
             );
             Ok(())
@@ -54,7 +54,7 @@ impl ChatExpectations {
         });
 
         if found {
-            info!("✓ Found expected message in {}: {}", channel, content);
+            info!("Found expected message in {}: {}", channel, content);
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -81,7 +81,7 @@ impl ChatExpectations {
 
         if unique_nodes.len() >= min_nodes {
             info!(
-                "✓ Found messages from {} different nodes (expected at least {})",
+                "Found messages from {} different nodes (expected at least {})",
                 unique_nodes.len(),
                 min_nodes
             );
@@ -139,7 +139,7 @@ impl ProcessingExpectations {
         });
 
         if found {
-            info!("✓ Found processing started event for CID: {}", cid);
+            info!("Found processing started event for CID: {}", cid);
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -161,7 +161,7 @@ impl ProcessingExpectations {
         });
 
         if found {
-            info!("✓ Found processing finished event for CID: {}", cid);
+            info!("Found processing finished event for CID: {}", cid);
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -247,7 +247,7 @@ impl ExpectationBuilder {
     /// Build and return result - succeeds only if all expectations passed
     pub fn build(self) -> Result<()> {
         if self.errors.is_empty() {
-            info!("✓ All expectations passed");
+            info!("All expectations passed");
             Ok(())
         } else {
             let error_msgs: Vec<String> =

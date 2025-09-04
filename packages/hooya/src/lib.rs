@@ -12,6 +12,7 @@ pub use chunked_reader::*;
 
 pub mod addr_book;
 pub mod address_discovery;
+pub mod backends;
 pub mod chat_handler;
 pub mod chatroom;
 pub mod cid;

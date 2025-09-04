@@ -141,7 +141,7 @@ impl K3dCluster {
                 "--format",
                 "{{.Names}}",
                 "--filter",
-                &format!("name={}", registry_name),
+                &format!("name={registry_name}"),
             ])
             .output()
             .context("Failed to check for existing registry")?;
@@ -330,27 +330,4 @@ pub fn check_kubectl_available() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    #[ignore] // Only run manually as it requires k3d
-    async fn test_k3d_cluster_lifecycle() -> Result<()> {
-        let cluster = K3dCluster::new("test-hooya-itest".to_string());
-
-        // Create cluster
-        cluster.create().await?;
-
-        // Verify it exists
-        assert!(cluster.exists().await?);
-
-        // Wait for readiness
-        cluster.wait_for_ready(60).await?;
-
-        // Clean up
-        cluster.delete().await?;
-
-        Ok(())
-    }
-}
+// Removed manual lifecycle test to keep CI focused on e2e

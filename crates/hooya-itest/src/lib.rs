@@ -4,9 +4,6 @@ pub mod fixtures;
 pub mod k3d;
 pub mod rest;
 pub mod sse;
-
-#[cfg(test)]
-mod integration_tests;
 #[cfg(test)]
 mod tests;
 

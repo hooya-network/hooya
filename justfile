@@ -38,7 +38,11 @@ build-test-images:
     docker build --target hooya-web-proxy -t hooya-web-proxy:itests .
 
 itests: build-test-images
+    -k3d cluster delete hooya-itest
+    -docker stop $(docker ps -q --filter "name=hooya-test-postgres") && docker rm $(docker ps -aq --filter "name=hooya-test-postgres")
     cargo test -p hooya-itest
+    -k3d cluster delete hooya-itest
+    -docker stop $(docker ps -q --filter "name=hooya-test-postgres") && docker rm $(docker ps -aq --filter "name=hooya-test-postgres")
 
 # check all code compiles
 check:

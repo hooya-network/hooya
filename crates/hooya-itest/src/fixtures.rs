@@ -15,9 +15,10 @@ use std::sync::Arc;
 use tokio::sync::OnceCell;
 
 use crate::k3d::K3dCluster;
-use tracing::info;
+use tracing::{debug, info};
 
 static CLUSTER_CELL: OnceCell<Arc<DeployedCluster>> = OnceCell::const_new();
+static POSTGRES_CELL: OnceCell<Arc<PostgresContainer>> = OnceCell::const_new();
 
 /// Create and cache a deployed test cluster inside a running k3d instance
 pub async fn get_shared_test_cluster() -> Arc<DeployedCluster> {
@@ -29,8 +30,22 @@ pub async fn get_shared_test_cluster() -> Arc<DeployedCluster> {
             k3d.create().await.expect("Failed to create k3d cluster");
             k3d.wait_for_ready(120).await.expect("Cluster not ready");
 
-            // 2. Deploy services (hooya & proxy)
-            let topology = small_test_cluster();
+            // 2. Ensure PostgreSQL is available and build topology (one node uses Postgres)
+            let pg = get_shared_postgres_container().await;
+            let pg_uri = pg
+                .k8s_connection_string()
+                .await
+                .expect("Failed to get k8s connection string");
+
+            let mut topology = small_test_cluster();
+            if let Some(first) = topology.nodes.get_mut(0) {
+                first.db_uri = Some(pg_uri);
+                info!(
+                    "Configured node '{}' to use Postgres backend",
+                    first.name
+                );
+            }
+
             info!(
                 "Deploying test topology: {} nodes, {} proxies",
                 topology.nodes.len(),
@@ -50,38 +65,247 @@ pub async fn get_shared_test_cluster() -> Arc<DeployedCluster> {
         .clone()
 }
 
+/// Create and cache a shared PostgreSQL container for all tests
+pub async fn get_shared_postgres_container() -> Arc<PostgresContainer> {
+    POSTGRES_CELL
+        .get_or_init(|| async {
+            info!("Starting shared PostgreSQL container...");
+            Arc::new(
+                PostgresContainer::start()
+                    .await
+                    .expect("Failed to start shared postgres container"),
+            )
+        })
+        .await
+        .clone()
+}
+
 use anyhow::{Context, Result};
+use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::time::sleep;
+
+/// Minimal Postgres container manager for tests
+pub struct PostgresContainer {
+    container_id: String,
+    port: u16,
+}
+
+impl PostgresContainer {
+    pub async fn start() -> Result<Self> {
+        let port = 15432; // fixed host port for tests
+        let container_name =
+            format!("hooya-test-postgres-{}", uuid::Uuid::new_v4().simple());
+
+        info!("Starting PostgreSQL container: {}", container_name);
+
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "--name",
+                &container_name,
+                "-e",
+                "POSTGRES_PASSWORD=testpass",
+                "-e",
+                "POSTGRES_USER=testuser",
+                "-e",
+                "POSTGRES_DB=hooya_test",
+                "-p",
+                &format!("{port}:5432"),
+                "postgres:15",
+            ])
+            .output()
+            .await
+            .context("Failed to start postgres container")?;
+
+        if !output.status.success() {
+            return Err(anyhow::anyhow!(
+                "Docker run failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        let container_id = String::from_utf8(output.stdout)?.trim().to_string();
+        info!("PostgreSQL container started: {}", container_id);
+
+        // Connect to k3d network for inter-container communication
+        let connect_output = Command::new("docker")
+            .args(["network", "connect", "k3d-hooya-itest", &container_id])
+            .output()
+            .await
+            .context("Failed to connect postgres to k3d network")?;
+
+        if !connect_output.status.success() {
+            info!(
+                "Failed to connect to k3d network (may not exist yet): {}",
+                String::from_utf8_lossy(&connect_output.stderr)
+            );
+        } else {
+            info!("Connected PostgreSQL container to k3d network");
+        }
+
+        // Wait for readiness
+        let mut retries = 30;
+        while retries > 0 {
+            let check_output = Command::new("docker")
+                .args([
+                    "exec",
+                    &container_id,
+                    "pg_isready",
+                    "-U",
+                    "testuser",
+                    "-d",
+                    "hooya_test",
+                ])
+                .output()
+                .await?;
+            if check_output.status.success() {
+                info!("PostgreSQL is ready");
+                break;
+            }
+            debug!(
+                "Waiting for PostgreSQL to be ready... {} retries left",
+                retries
+            );
+            sleep(std::time::Duration::from_secs(1)).await;
+            retries -= 1;
+        }
+        if retries == 0 {
+            return Err(anyhow::anyhow!(
+                "PostgreSQL container failed to become ready"
+            ));
+        }
+
+        Ok(Self { container_id, port })
+    }
+
+    /// Get the container's IP address on the k3d network
+    pub async fn get_k3d_ip(&self) -> Result<Option<String>> {
+        let output = Command::new("docker")
+            .args(["inspect", &self.container_id, "--format", "{{(index .NetworkSettings.Networks \"k3d-hooya-itest\").IPAddress}}"])
+            .output()
+            .await
+            .context("Failed to get container IP")?;
+
+        if output.status.success() {
+            let ip = String::from_utf8(output.stdout)?.trim().to_string();
+            if !ip.is_empty() && ip != "<nil>" {
+                return Ok(Some(ip));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn connection_string(&self) -> String {
+        format!(
+            "postgresql://testuser:testpass@localhost:{}/hooya_test",
+            self.port
+        )
+    }
+
+    pub async fn k8s_connection_string(&self) -> Result<String> {
+        // Try to get IP from k3d network first
+        if let Some(k3d_ip) = self.get_k3d_ip().await? {
+            info!("Using PostgreSQL k3d network IP: {}", k3d_ip);
+            return Ok(format!(
+                "postgresql://testuser:testpass@{k3d_ip}:5432/hooya_test"
+            ));
+        }
+
+        // Fallback to host access (original behavior)
+        info!("Falling back to host.k3d.internal access");
+        Ok(format!(
+            "postgresql://testuser:testpass@host.k3d.internal:{}/hooya_test",
+            self.port
+        ))
+    }
+
+    pub async fn cleanup(&self) -> Result<()> {
+        let _ = Command::new("docker")
+            .args(["stop", &self.container_id])
+            .output()
+            .await;
+        let _ = Command::new("docker")
+            .args(["rm", &self.container_id])
+            .output()
+            .await;
+        Ok(())
+    }
+}
 
 /// Port-forward all proxy services to localhost for external access in tests.
-async fn port_forward_all_proxies(cluster: &DeployedCluster) -> Result<()> {
+pub async fn port_forward_all_proxies(cluster: &DeployedCluster) -> Result<()> {
+    // Ensure kubectl is available
+    let kubectl_ok = Command::new("kubectl")
+        .arg("version")
+        .arg("--client")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !kubectl_ok {
+        return Err(anyhow::anyhow!("kubectl is not installed or not working (required for port-forward)"));
+    }
+
     for i in 0..cluster.topology.proxies {
         let namespace = cluster.namespace.clone();
-        let svc_name = format!("hooya-web-proxy-{}-service", i);
         let local_port = 8532 + i;
+        let service_name = format!("hooya-web-proxy-{i}-service");
+        let service_name_for_task = service_name.clone();
 
+        // Spawn a resilient port-forward loop to the Service that restarts on disconnect
         tokio::spawn(async move {
-            let output = Command::new("kubectl")
-                .args([
-                    "-n",
-                    &namespace,
-                    "port-forward",
-                    &format!("service/{}", svc_name),
-                    &format!("{}:8532", local_port.to_string()),
-                ])
-                .spawn()
-                .context("Failed to start port-forward")
-                .unwrap()
-                .wait_with_output()
-                .await;
-
-            if let Err(e) = output {
-                tracing::warn!("Port-forward error for proxy {}: {:?}", i, e);
+            loop {
+                let mut child = Command::new("kubectl")
+                    .args([
+                        "-n",
+                        &namespace,
+                        "port-forward",
+                        &format!("service/{service_name_for_task}"),
+                        &format!("{local_port}:8532"),
+                    ])
+                    .spawn()
+                    .expect("Failed to start port-forward process");
+                let status = child.wait().await;
+                tracing::warn!(
+                    "Port-forward exited for proxy service {} ({}): {:?}",
+                    i,
+                    service_name_for_task,
+                    status
+                );
+                // Small backoff before retrying
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
 
-        // Give it a bit of time to start
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Wait until the local port is accepting connections (up to ~10s)
+        let mut ready = false;
+        for _ in 0..50 {
+            match TcpStream::connect(("127.0.0.1", local_port as u16)).await {
+                Ok(_) => {
+                    ready = true;
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200))
+                        .await;
+                }
+            }
+        }
+        if !ready {
+            tracing::warn!(
+                "Port-forward to service {} did not become ready on localhost:{}",
+                service_name,
+                local_port
+            );
+        } else {
+            tracing::info!(
+                "Established port-forward to service {} on localhost:{}",
+                service_name,
+                local_port
+            );
+        }
     }
     Ok(())
 }
@@ -117,14 +341,15 @@ pub fn create_test_topology(
 
     for i in 0..node_count {
         nodes.push(NodeConfig {
-            name: format!("node-{}", i),
-            operator: format!("test-operator-{}", i),
-            instance_name: format!("test-instance-{}", i),
+            name: format!("node-{i}"),
+            operator: format!("test-operator-{i}"),
+            instance_name: format!("test-instance-{i}"),
+            db_uri: None,
         });
     }
 
     let namespace = if let Some(suffix) = namespace_suffix {
-        format!("hooya-itest-{}", suffix)
+        format!("hooya-itest-{suffix}")
     } else {
         {
             let uuid_str = Uuid::new_v4().to_string();
@@ -210,6 +435,7 @@ pub fn create_named_test_cluster(
             name: name.to_string(),
             operator: operator.to_string(),
             instance_name: instance.to_string(),
+            db_uri: None,
         })
         .collect();
 
@@ -242,9 +468,10 @@ mod tests {
         assert!(topology.namespace.contains("test"));
 
         for (i, node) in topology.nodes.iter().enumerate() {
-            assert_eq!(node.name, format!("node-{}", i));
-            assert_eq!(node.operator, format!("test-operator-{}", i));
-            assert_eq!(node.instance_name, format!("test-instance-{}", i));
+            assert_eq!(node.name, format!("node-{i}"));
+            assert_eq!(node.operator, format!("test-operator-{i}"));
+            assert_eq!(node.instance_name, format!("test-instance-{i}"));
+            assert_eq!(node.db_uri, None);
         }
     }
 

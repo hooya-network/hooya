@@ -23,6 +23,7 @@ pub struct NodeConfig {
     pub name: String,
     pub operator: String,
     pub instance_name: String,
+    pub db_uri: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +78,7 @@ impl DeployedCluster {
             Api::namespaced(self.client.clone(), &self.namespace);
 
         // Find the node pod
-        let label_selector = format!("app=hooyad-node-{}", node_index);
+        let label_selector = format!("app=hooyad-node-{node_index}");
         let list_params =
             kube::api::ListParams::default().labels(&label_selector);
 
@@ -169,7 +170,7 @@ impl DeployedCluster {
             Api::namespaced(self.client.clone(), &self.namespace);
 
         // Find the proxy pod
-        let label_selector = format!("app=hooya-web-proxy-{}", proxy_index);
+        let label_selector = format!("app=hooya-web-proxy-{proxy_index}");
         let list_params =
             kube::api::ListParams::default().labels(&label_selector);
 
@@ -240,7 +241,7 @@ impl DeployedCluster {
         }
 
         for i in 0..self.topology.proxies {
-            let deployment_name = format!("hooya-web-proxy-{}", i);
+            let deployment_name = format!("hooya-web-proxy-{i}");
             if let Err(e) =
                 deployments.delete(&deployment_name, &delete_params).await
             {
@@ -260,7 +261,7 @@ impl DeployedCluster {
         }
 
         for i in 0..self.topology.proxies {
-            let service_name = format!("hooya-web-proxy-{}-service", i);
+            let service_name = format!("hooya-web-proxy-{i}-service");
             if let Err(e) = services.delete(&service_name, &delete_params).await
             {
                 warn!("Failed to delete service {}: {}", service_name, e);
@@ -327,9 +328,11 @@ pub async fn create_test_cluster(
     wait_for_deployments_ready(&client, &topology.namespace, &topology.nodes)
         .await?;
 
-    // Deploy proxies
+    // Deploy proxies, mapping each proxy to a specific node (round-robin)
     for i in 0..topology.proxies {
-        deploy_hooya_proxy(&client, &topology.namespace, i).await?;
+        let target_node_index = (i as usize) % topology.nodes.len();
+        deploy_hooya_proxy(&client, &topology.namespace, i, target_node_index)
+            .await?;
         proxy_endpoints.push(format!(
             "hooya-web-proxy-{}-service.{}.svc.cluster.local:8532",
             i, topology.namespace
@@ -576,23 +579,35 @@ async fn create_hooyad_deployment(
                                 ..Default::default()
                             },
                         ]),
-                        env: Some(vec![
-                            k8s_openapi::api::core::v1::EnvVar {
-                                name: "HOOYAD_ENDPOINT".to_string(),
-                                value: Some("0.0.0.0:8531".to_string()),
-                                ..Default::default()
-                            },
-                            k8s_openapi::api::core::v1::EnvVar {
-                                name: "HOOYAD_FILESTORE".to_string(),
-                                value: Some("/data".to_string()),
-                                ..Default::default()
-                            },
-                            k8s_openapi::api::core::v1::EnvVar {
-                                name: "HOOYAD_LOG_LEVEL".to_string(),
-                                value: Some("debug".to_string()),
-                                ..Default::default()
-                            },
-                        ]),
+                        env: Some({
+                            let mut env_vars = vec![
+                                k8s_openapi::api::core::v1::EnvVar {
+                                    name: "HOOYAD_ENDPOINT".to_string(),
+                                    value: Some("0.0.0.0:8531".to_string()),
+                                    ..Default::default()
+                                },
+                                k8s_openapi::api::core::v1::EnvVar {
+                                    name: "HOOYAD_FILESTORE".to_string(),
+                                    value: Some("/data".to_string()),
+                                    ..Default::default()
+                                },
+                                k8s_openapi::api::core::v1::EnvVar {
+                                    name: "HOOYAD_LOG_LEVEL".to_string(),
+                                    value: Some("debug".to_string()),
+                                    ..Default::default()
+                                },
+                            ];
+
+                            if let Some(db_uri) = &node.db_uri {
+                                env_vars.push(k8s_openapi::api::core::v1::EnvVar {
+                                    name: "HOOYAD_DB_URI".to_string(),
+                                    value: Some(db_uri.clone()),
+                                    ..Default::default()
+                                });
+                            }
+
+                            env_vars
+                        }),
                         volume_mounts: Some(vec![
                             VolumeMount {
                                 name: "data".to_string(),
@@ -706,8 +721,10 @@ async fn deploy_hooya_proxy(
     client: &Client,
     namespace: &str,
     proxy_index: u32,
+    target_node_index: usize,
 ) -> Result<()> {
-    create_proxy_deployment(client, namespace, proxy_index).await?;
+    create_proxy_deployment(client, namespace, proxy_index, target_node_index)
+        .await?;
     create_proxy_service(client, namespace, proxy_index).await?;
     Ok(())
 }
@@ -716,16 +733,14 @@ async fn create_proxy_deployment(
     client: &Client,
     namespace: &str,
     proxy_index: u32,
+    target_node_index: usize,
 ) -> Result<()> {
     let mut labels = BTreeMap::new();
-    labels.insert(
-        "app".to_string(),
-        format!("hooya-web-proxy-{}", proxy_index),
-    );
+    labels.insert("app".to_string(), format!("hooya-web-proxy-{proxy_index}"));
 
     let deployment = Deployment {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some(format!("hooya-web-proxy-{}", proxy_index)),
+            name: Some(format!("hooya-web-proxy-{proxy_index}")),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
@@ -757,8 +772,8 @@ async fn create_proxy_deployment(
                             },
                             k8s_openapi::api::core::v1::EnvVar {
                                 name: "HOOYAD_ENDPOINT".to_string(),
-                                // Connect to first hooyad node for simplicity
-                                value: Some(format!("hooyad-node-0-service.{}.svc.cluster.local:8531", namespace)),
+                                // Route this proxy to a specific node
+                                value: Some(format!("hooyad-node-{target_node_index}-service.{namespace}.svc.cluster.local:8531")),
                                 ..Default::default()
                             },
                             k8s_openapi::api::core::v1::EnvVar {
@@ -794,14 +809,11 @@ async fn create_proxy_service(
     proxy_index: u32,
 ) -> Result<()> {
     let mut labels = BTreeMap::new();
-    labels.insert(
-        "app".to_string(),
-        format!("hooya-web-proxy-{}", proxy_index),
-    );
+    labels.insert("app".to_string(), format!("hooya-web-proxy-{proxy_index}"));
 
     let service = Service {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some(format!("hooya-web-proxy-{}-service", proxy_index)),
+            name: Some(format!("hooya-web-proxy-{proxy_index}-service")),
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
@@ -870,7 +882,7 @@ async fn wait_for_proxy_deployments_ready(
         Api::namespaced(client.clone(), namespace);
 
     for i in 0..proxy_count {
-        let deployment_name = format!("hooya-web-proxy-{}", i);
+        let deployment_name = format!("hooya-web-proxy-{i}");
         info!("Waiting for proxy {} to be ready...", deployment_name);
 
         for _ in 0..60 {

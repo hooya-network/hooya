@@ -59,7 +59,7 @@ pub struct MeshBehavior {
 #[derive(Debug)]
 pub enum MeshBehaviorEvent {
     Gossipsub(GossipsubEvent),
-    Identify(identify::Event),
+    Identify(Box<identify::Event>),
     Ping(ping::Event),
     Mdns(mdns::Event),
 }
@@ -72,7 +72,7 @@ impl From<GossipsubEvent> for MeshBehaviorEvent {
 
 impl From<identify::Event> for MeshBehaviorEvent {
     fn from(event: identify::Event) -> Self {
-        MeshBehaviorEvent::Identify(event)
+        MeshBehaviorEvent::Identify(Box::new(event))
     }
 }
 
@@ -235,7 +235,7 @@ impl MeshNetwork {
                             self.handle_gossipsub_event(gossipsub_event).await;
                         }
                         SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(identify_event)) => {
-                            self.handle_identify_event(identify_event, &discv5).await;
+                            self.handle_identify_event(*identify_event, &discv5).await;
                         }
                         SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns_event)) => {
                             self.handle_mdns_event(mdns_event, &mut swarm).await;
