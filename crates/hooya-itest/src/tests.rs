@@ -256,6 +256,24 @@ async fn run_file_backend_test(
         },
     ];
 
+    // Also test with JPEG image to trigger image processing and exercise image_row method
+    let jpeg_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test-vectors")
+        .join(
+            "bafkreihlc3npy2lbafe3bndeqkxwwrtpvkebiip4pb26b4soziltjj4cqe.jpeg",
+        );
+    let jpeg_content = std::fs::read(&jpeg_path)?;
+    let jpeg_tags = vec![
+        FileTag {
+            namespace: "category".to_string(),
+            descriptor: "image".to_string(),
+        },
+        FileTag {
+            namespace: "source".to_string(),
+            descriptor: "test-vector".to_string(),
+        },
+    ];
+
     // Step 1: Start upload session - exercises backend new_tag_vocab potentially
     info!("Starting upload session");
     let upload_response = rest_client
@@ -421,6 +439,117 @@ async fn run_file_backend_test(
         }
         info!("Successfully found uploaded file in files list");
     }
+
+    info!("Testing JPEG image upload to exercise image processing");
+    let jpeg_upload_response = rest_client
+        .start_upload(
+            Some(jpeg_content.len() as u64),
+            Some("image/jpeg".to_string()),
+        )
+        .await?;
+
+    info!(
+        "JPEG upload session started: {}",
+        jpeg_upload_response.upload_id
+    );
+
+    let jpeg_chunk_response = rest_client
+        .upload_chunk(&jpeg_upload_response.upload_id, 0, jpeg_content.clone())
+        .await?;
+
+    info!(
+        "JPEG chunk uploaded, received {} bytes",
+        jpeg_chunk_response.bytes_received
+    );
+
+    info!("Completing JPEG upload with image tags");
+    let jpeg_complete_response = rest_client
+        .complete_upload(&jpeg_upload_response.upload_id, jpeg_tags.clone())
+        .await?;
+
+    let jpeg_cid = jpeg_complete_response.cid;
+    info!("JPEG upload completed, CID: {}", jpeg_cid);
+
+    info!(
+        "Waiting for JPEG processing to finish for CID: {}",
+        jpeg_cid
+    );
+    let _ = sse_stream
+        .wait_for_processing_finished(&jpeg_cid, Duration::from_secs(15))
+        .await?;
+
+    info!("Querying JPEG file information for CID: {}", jpeg_cid);
+    let jpeg_file_info = match rest_client
+        .wait_for_file_info(&jpeg_cid, Duration::from_secs(5))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                "Get JPEG file info failed for CID {} via {}: {}",
+                jpeg_cid,
+                rest_client.base_url(),
+                e
+            );
+            return Err(e);
+        }
+    };
+
+    info!(
+        "JPEG file info retrieved: {}",
+        serde_json::to_string_pretty(&jpeg_file_info)?
+    );
+
+    if let Some(ext_file) = jpeg_file_info.get("extFile") {
+        if let Some(image_data) = ext_file.get("image") {
+            let height = image_data
+                .get("height")
+                .and_then(|h| h.as_i64())
+                .unwrap_or(0);
+            let width = image_data
+                .get("width")
+                .and_then(|w| w.as_i64())
+                .unwrap_or(0);
+            let aspect_ratio = image_data
+                .get("aspectRatio")
+                .and_then(|r| r.as_f64())
+                .unwrap_or(0.0);
+
+            info!(
+                "JPEG metadata - Height: {}, Width: {}, Aspect Ratio: {}",
+                height, width, aspect_ratio
+            );
+
+            if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
+                return Err(anyhow::anyhow!(
+                    "Invalid JPEG metadata: height={}, width={}, aspect_ratio={}",
+                    height, width, aspect_ratio
+                ));
+            }
+
+            info!("✓ JPEG image processing and database storage successful!");
+        } else {
+            return Err(anyhow::anyhow!("JPEG file missing image metadata"));
+        }
+    } else {
+        return Err(anyhow::anyhow!("JPEG file missing extFile data"));
+    }
+
+    let jpeg_file_tags = rest_client.get_file_tags(&jpeg_cid).await?;
+    for expected_tag in &jpeg_tags {
+        let found = jpeg_file_tags.iter().any(|tag| {
+            tag.namespace == expected_tag.namespace
+                && tag.descriptor == expected_tag.descriptor
+        });
+        if !found {
+            return Err(anyhow::anyhow!(
+                "Expected JPEG tag not found: {}:{}",
+                expected_tag.namespace,
+                expected_tag.descriptor
+            ));
+        }
+    }
+    info!("✓ JPEG tags verified successfully");
 
     // Repeat the same file operations against proxy 1 (targets node 1 -> SQLite) if available
     if cluster.topology.proxies > 1 {
@@ -592,10 +721,89 @@ async fn run_file_backend_test(
                 ));
             }
         }
+
+        info!("Testing JPEG upload via proxy 1 (SQLite backend)");
+        let jpeg_upload1 = rest_client1
+            .start_upload(
+                Some(jpeg_content.len() as u64),
+                Some("image/jpeg".to_string()),
+            )
+            .await?;
+
+        let _ = rest_client1
+            .upload_chunk(&jpeg_upload1.upload_id, 0, jpeg_content)
+            .await?;
+
+        let mut jpeg_tags1 = jpeg_tags;
+        jpeg_tags1.push(FileTag {
+            namespace: "backend".to_string(),
+            descriptor: "sqlite".to_string(),
+        });
+
+        let jpeg_complete1 = rest_client1
+            .complete_upload(&jpeg_upload1.upload_id, jpeg_tags1.clone())
+            .await?;
+        let jpeg_cid1 = jpeg_complete1.cid;
+
+        info!("Waiting for JPEG processing (SQLite): {}", jpeg_cid1);
+        let _ = sse_stream1
+            .wait_for_processing_finished(&jpeg_cid1, Duration::from_secs(15))
+            .await?;
+
+        let jpeg_info1 = rest_client1
+            .wait_for_file_info(&jpeg_cid1, Duration::from_secs(5))
+            .await?;
+
+        if let Some(ext_file) = jpeg_info1.get("extFile") {
+            if let Some(image_data) = ext_file.get("image") {
+                let height = image_data
+                    .get("height")
+                    .and_then(|h| h.as_i64())
+                    .unwrap_or(0);
+                let width = image_data
+                    .get("width")
+                    .and_then(|w| w.as_i64())
+                    .unwrap_or(0);
+                let aspect_ratio = image_data
+                    .get("aspectRatio")
+                    .and_then(|r| r.as_f64())
+                    .unwrap_or(0.0);
+
+                if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
+                    return Err(anyhow::anyhow!(
+                        "SQLite JPEG metadata invalid: height={}, width={}, aspect_ratio={}",
+                        height, width, aspect_ratio
+                    ));
+                }
+
+                info!("✓ SQLite JPEG processing successful!");
+            } else {
+                return Err(anyhow::anyhow!(
+                    "SQLite JPEG missing image metadata"
+                ));
+            }
+        } else {
+            return Err(anyhow::anyhow!("SQLite JPEG missing extFile data"));
+        }
+
+        let jpeg_tags1_result = rest_client1.get_file_tags(&jpeg_cid1).await?;
+        for expected_tag in &jpeg_tags1 {
+            let found = jpeg_tags1_result.iter().any(|tag| {
+                tag.namespace == expected_tag.namespace
+                    && tag.descriptor == expected_tag.descriptor
+            });
+            if !found {
+                return Err(anyhow::anyhow!(
+                    "SQLite JPEG tag not found: {}:{}",
+                    expected_tag.namespace,
+                    expected_tag.descriptor
+                ));
+            }
+        }
     }
 
     info!("File backend verification test completed successfully across Postgres and SQLite nodes!");
-    info!("Verified backend methods: new_file, new_tag_vocab, new_tag_map, file_row, file_tags, files_page on both nodes");
+    info!("Verified backend methods: new_file, new_tag_vocab, new_tag_map, file_row, file_tags, files_page, new_image, image_row on both nodes");
 
     Ok(())
 }

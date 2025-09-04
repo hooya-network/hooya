@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::{command, value_parser, Arg};
+use clap::{command, Arg};
 use dotenv::dotenv;
 use futures_util::Stream;
 use hooya::local::DatabaseBackend;
@@ -1053,12 +1053,8 @@ impl<T: hooya::local::DatabaseBackend + 'static> Control for IControl<T> {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async_main())
-}
-
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
     let matches = command!()
@@ -1068,14 +1064,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .env("HOOYAD_ENDPOINT")
                 .default_value(hooya_config::DEFAULT_HOOYAD_ENDPOINT),
         )
-        .arg(
-            Arg::new("filestore")
-                .long("filestore")
-                .env("HOOYAD_FILESTORE")
-                .value_parser(value_parser!(PathBuf))
-                .default_value(&**hooya_config::DEFAULT_DATA_DIR),
-        )
-        .arg(Arg::new("db-uri").long("db-uri").env("HOOYAD_DB_URI"))
         .arg(
             Arg::new("log-level")
                 .long("log-level")
@@ -1099,23 +1087,19 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .expect("setting default subscriber failed");
 
-    // filestore path
-    let filestore_path =
-        matches.get_one::<PathBuf>("filestore").unwrap().clone();
+    let runtime_config = hooya_config::RuntimeConfig::new(PathBuf::from(
+        hooya_config::DEFAULT_DATA_DIR.as_str(),
+    ));
+
+    let hooya_config = runtime_config.load_hooya_config()?;
+
+    let filestore_path = PathBuf::from(&hooya_config.filestore.path);
+    let db_uri = &hooya_config.filestore.db_uri;
 
     let runtime_config =
         hooya_config::RuntimeConfig::new(filestore_path.clone());
-    let default_db_uri = runtime_config.sqlite_uri();
 
-    // Create filestore structure
     runtime_config.ensure_filestore_structure()?;
-
-    // Load HooyaConfig
-    let hooya_config = runtime_config.load_hooya_config()?;
-
-    let db_uri = matches
-        .get_one::<String>("db-uri")
-        .unwrap_or(&default_db_uri);
 
     let database_type =
         hooya_config::RuntimeConfig::database_type_from_uri(db_uri);
@@ -1130,13 +1114,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let pool =
                 SqlitePool::connect(db_uri).await.with_context(|| {
-                    format!(
-                        "Failed to connect to SQLite database at: {db_uri}"
-                    )
+                    format!("Failed to connect to SQLite database at: {db_uri}")
                 })?;
             let mut db = hooya::backends::SqliteBackend { executor: pool };
 
-            // Always run init_tables - CREATE TABLE IF NOT EXISTS is idempotent
+            // always run init_tables
             db.init_tables().await?;
 
             run_server_with_db(db, matches, hooya_config, filestore_path)
@@ -1145,13 +1127,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         hooya_config::DatabaseType::PostgreSQL => {
             use sqlx::PgPool;
             let pool = PgPool::connect(db_uri).await.with_context(|| {
-                format!(
-                    "Failed to connect to PostgreSQL database at: {db_uri}"
-                )
+                format!("Failed to connect to PostgreSQL database at: {db_uri}")
             })?;
             let mut db = hooya::backends::PostgresBackend { executor: pool };
 
-            // Always run init_tables - CREATE TABLE IF NOT EXISTS is idempotent
+            // always run init_tables
             db.init_tables().await?;
 
             run_server_with_db(db, matches, hooya_config, filestore_path)

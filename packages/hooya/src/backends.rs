@@ -631,7 +631,7 @@ pub mod sqlite {
                 "#
                 );
                 count_sql_query = format!(
-                    r#"SELECT COUNT(*) as total FROM Files f {visibility_where}"#
+                    r#"SELECT COUNT(*) as total FROM files f {visibility_where}"#
                 );
 
                 let query =
@@ -1250,9 +1250,9 @@ pub mod postgres {
                     r#"
                 CREATE TABLE IF NOT EXISTS Images (
                 cid BYTEA NOT NULL PRIMARY KEY,
-                height INTEGER NOT NULL,
-                width INTEGER NOT NULL,
-                ratio REAL NOT NULL,
+                height BIGINT NOT NULL,
+                width BIGINT NOT NULL,
+                ratio DOUBLE PRECISION NOT NULL,
                 primarycolor BYTEA,
                 colors BYTEA,
                 FOREIGN KEY (cid) REFERENCES Files(cid) ON DELETE CASCADE)"#,
@@ -1264,10 +1264,10 @@ pub mod postgres {
                     r#"
                 CREATE TABLE IF NOT EXISTS Videos (
                 cid BYTEA NOT NULL PRIMARY KEY,
-                height INTEGER NOT NULL,
-                width INTEGER NOT NULL,
-                ratio REAL NOT NULL,
-                duration FLOAT NOT NULL,
+                height BIGINT NOT NULL,
+                width BIGINT NOT NULL,
+                ratio DOUBLE PRECISION NOT NULL,
+                duration DOUBLE PRECISION NOT NULL,
                 FOREIGN KEY (cid) REFERENCES Files(cid) ON DELETE CASCADE)"#,
                 )
                 .await?;
@@ -1280,9 +1280,9 @@ pub mod postgres {
                 size BIGINT,
                 mimetype TEXT,
                 sourcecid BYTEA NOT NULL,
-                height INTEGER NOT NULL,
-                width INTEGER NOT NULL,
-                ratio REAL NOT NULL,
+                height BIGINT NOT NULL,
+                width BIGINT NOT NULL,
+                ratio DOUBLE PRECISION NOT NULL,
                 isanimated BOOLEAN DEFAULT FALSE NOT NULL,
                 FOREIGN KEY (sourcecid) REFERENCES Files(cid) ON DELETE CASCADE)"#,
                 )
@@ -1318,7 +1318,7 @@ pub mod postgres {
         async fn new_file(&self, f: FileRow) -> Result<()> {
             sqlx::query::<Postgres>(
                 r#"
-                INSERT INTO Files (Cid, Size, Mimetype) VALUES
+                INSERT INTO files (cid, size, mimetype) VALUES
                 ($1, $2, $3) ON CONFLICT DO NOTHING"#,
             )
             .bind(f.cid)
@@ -1340,7 +1340,7 @@ pub mod postgres {
             for t in tags {
                 sqlx::query::<Postgres>(
                     r#"
-                    INSERT INTO Tags (namespace, descriptor) VALUES
+                    INSERT INTO tags (namespace, descriptor) VALUES
                     ($1, $2) ON CONFLICT DO NOTHING"#,
                 )
                 .bind(t.namespace)
@@ -1363,7 +1363,7 @@ pub mod postgres {
             for t in tag_maps {
                 sqlx::query::<Postgres>(
                     r#"
-                    INSERT INTO TagMap (filecid, tagid, reason) VALUES
+                    INSERT INTO tagmap (filecid, tagid, reason) VALUES
                     ($1, $2, $3) ON CONFLICT DO NOTHING"#,
                 )
                 .bind(t.file_cid.clone())
@@ -1436,16 +1436,16 @@ pub mod postgres {
         async fn new_image(&self, image: ImageRow) -> Result<()> {
             sqlx::query::<Postgres>(
                 r#"
-                INSERT INTO Images (Cid, Height, Width, Ratio, PrimaryColor, Colors) VALUES
-                ($1, $2, $3, $4, $5, $6) ON CONFLICT(Cid)
+                INSERT INTO images (cid, height, width, ratio, primarycolor, colors) VALUES
+                ($1, $2, $3, $4, $5, $6) ON CONFLICT(cid)
                     DO UPDATE SET
-                    Height=EXCLUDED.Height, Width=EXCLUDED.Width,
-                    Ratio=EXCLUDED.Ratio, PrimaryColor=EXCLUDED.PrimaryColor,
-                    Colors=EXCLUDED.Colors"#,
+                    height=EXCLUDED.height, width=EXCLUDED.width,
+                    ratio=EXCLUDED.ratio, primarycolor=EXCLUDED.primarycolor,
+                    colors=EXCLUDED.colors"#,
             )
             .bind(image.cid)
-            .bind(image.height as i32)
-            .bind(image.width as i32)
+            .bind(image.height as i64)
+            .bind(image.width as i64)
             .bind(image.ratio)
             .bind(image.primary_color)
             .bind(image.colors)
@@ -1516,7 +1516,7 @@ pub mod postgres {
 
         async fn file_row(&self, cid: Vec<u8>) -> Result<FileRow> {
             let file_row = sqlx::query::<Postgres>(
-                "SELECT Cid, Mimetype, Size FROM Files WHERE Cid=$1",
+                "SELECT cid, mimetype, size FROM files WHERE cid=$1",
             )
             .bind(cid)
             .try_map(|r: PgRow| {
@@ -1538,12 +1538,12 @@ pub mod postgres {
 
         async fn image_row(&self, cid: Vec<u8>) -> Result<ImageRow> {
             let row =
-                sqlx::query::<Postgres>("SELECT Cid, Height, Width, Ratio, PrimaryColor, Colors FROM Images WHERE Cid=$1")
+                sqlx::query::<Postgres>("SELECT cid, height, width, ratio, primarycolor, colors FROM images WHERE cid=$1")
                     .bind(cid)
                     .try_map(|r: PgRow| {
                         let cid = r.try_get("cid")?;
-                        let height = r.try_get::<i32, _>("height")? as u32;
-                        let width = r.try_get::<i32, _>("width")? as u32;
+                        let height = r.try_get::<i64, _>("height")? as u32;
+                        let width = r.try_get::<i64, _>("width")? as u32;
                         let ratio = r.try_get("ratio")?;
                         let primary_color = r.try_get("primarycolor")?;
                         let colors = r.try_get("colors")?;
@@ -1628,9 +1628,9 @@ pub mod postgres {
             oldest_first: bool,
         ) -> Result<Vec<FileRow>> {
             let query = if oldest_first {
-                "SELECT Cid, Mimetype, Size FROM Files ORDER BY Indexed LIMIT $1 OFFSET $2"
+                "SELECT cid, mimetype, size FROM files ORDER BY indexed LIMIT $1 OFFSET $2"
             } else {
-                "SELECT Cid, Mimetype, Size FROM Files ORDER BY Indexed DESC LIMIT $1 OFFSET $2"
+                "SELECT cid, mimetype, size FROM files ORDER BY indexed DESC LIMIT $1 OFFSET $2"
             };
             let file_rows = sqlx::query::<Postgres>(query)
                 .bind(count as i64)
@@ -1808,27 +1808,27 @@ pub mod postgres {
                     r#"
                     SELECT
                         f.cid,
-                        f.Size,
-                        f.Mimetype,
+                        f.size,
+                        f.mimetype,
                         i.height as "ImageHeight",
                         i.width as "ImageWidth",
                         i.ratio as "ImageRatio",
                         i.colors as "ImageColors",
-                        i.PrimaryColor as "ImagePrimaryColor",
+                        i.primarycolor as "ImagePrimaryColor",
                         v.height as "VideoHeight",
                         v.width as "VideoWidth",
                         v.ratio as "VideoRatio",
                         v.duration as "VideoDuration"
-                    FROM Files f
-                    LEFT JOIN Images i ON f.cid = i.Cid
-                    LEFT JOIN Videos v ON f.cid = v.Cid
+                    FROM files f
+                    LEFT JOIN images i ON f.cid = i.cid
+                    LEFT JOIN videos v ON f.cid = v.cid
                     {visibility_where}
                     {order_clause}
                     LIMIT $1 OFFSET $2
                 "#
                 );
                 count_sql_query = format!(
-                    r#"SELECT COUNT(*) as total FROM Files f {visibility_where}"#
+                    r#"SELECT COUNT(*) as total FROM files f {visibility_where}"#
                 );
 
                 let query = sqlx::query::<Postgres>(&sql_query)
@@ -1855,7 +1855,10 @@ pub mod postgres {
 
             let mut files: Vec<File> = Vec::with_capacity(raw_files.len());
             for raw_file in raw_files.into_iter() {
-                let cid: Vec<u8> = raw_file.try_get("cid")?;
+                let cid: Vec<u8> = raw_file.try_get("cid").map_err(|e| {
+                    tracing::error!("files_page failed to read cid: {:?}", e);
+                    e
+                })?;
                 let thumbnails =
                     crate::local::fetch_thumbnails_for(self, &cid).await?;
 
@@ -1870,7 +1873,11 @@ pub mod postgres {
                     .collect();
 
                 let ext_file = if let Ok(height) =
-                    raw_file.try_get::<Option<i32>, _>("ImageHeight")
+                    raw_file.try_get::<Option<i64>, _>("ImageHeight").map_err(|e| {
+                        tracing::error!("files_page failed to read ImageHeight for CID {}: {:?}", 
+                            crate::cid::encode(&cid), e);
+                        e
+                    })
                 {
                     if let Some(height) = height {
                         let colors_data: Option<Vec<u8>> =
@@ -1882,11 +1889,10 @@ pub mod postgres {
                             .collect();
                         Some(crate::proto::file::ExtFile::Image(
                             crate::proto::Image {
-                                height: height as i64,
+                                height,
                                 width: raw_file
-                                    .try_get::<Option<i32>, _>("ImageWidth")?
-                                    .unwrap_or(0)
-                                    as i64,
+                                    .try_get::<Option<i64>, _>("ImageWidth")?
+                                    .unwrap_or(0),
                                 aspect_ratio: raw_file
                                     .try_get::<Option<f64>, _>("ImageRatio")?
                                     .unwrap_or(0.0)
@@ -1899,16 +1905,19 @@ pub mod postgres {
                         None
                     }
                 } else if let Ok(height) =
-                    raw_file.try_get::<Option<i32>, _>("VideoHeight")
+                    raw_file.try_get::<Option<i64>, _>("VideoHeight").map_err(|e| {
+                        tracing::error!("files_page failed to read VideoHeight for CID {}: {:?}", 
+                            crate::cid::encode(&cid), e);
+                        e
+                    })
                 {
                     if let Some(height) = height {
                         Some(crate::proto::file::ExtFile::Video(
                             crate::proto::Video {
-                                height: height as i64,
+                                height,
                                 width: raw_file
-                                    .try_get::<Option<i32>, _>("VideoWidth")?
-                                    .unwrap_or(0)
-                                    as i64,
+                                    .try_get::<Option<i64>, _>("VideoWidth")?
+                                    .unwrap_or(0),
                                 aspect_ratio: raw_file
                                     .try_get::<Option<f64>, _>("VideoRatio")?
                                     .unwrap_or(0.0)
@@ -2149,9 +2158,7 @@ pub mod postgres {
             let having_clause = if !tag_constraints.is_empty() {
                 let non_negated_count =
                     tag_constraints.iter().filter(|tc| !tc.negated).count();
-                format!(
-                    "HAVING COUNT(DISTINCT tm.filecid) >= ${param_counter}"
-                )
+                format!("HAVING COUNT(DISTINCT tm.filecid) >= ${param_counter}")
             } else {
                 String::new()
             };
@@ -2273,9 +2280,7 @@ pub mod postgres {
             let having_clause = if !tag_constraints.is_empty() {
                 let non_negated_count =
                     tag_constraints.iter().filter(|tc| !tc.negated).count();
-                format!(
-                    "HAVING COUNT(DISTINCT tm.filecid) >= ${param_counter}"
-                )
+                format!("HAVING COUNT(DISTINCT tm.filecid) >= ${param_counter}")
             } else {
                 String::new()
             };
@@ -2327,7 +2332,7 @@ pub mod postgres {
 
         async fn random_file(&self, count: u32) -> Result<Vec<FileRow>> {
             let file_rows = sqlx::query::<Postgres>(
-                "SELECT Cid, Mimetype, Size FROM Files ORDER BY RANDOM() LIMIT $1",
+                "SELECT cid, mimetype, size FROM files ORDER BY RANDOM() LIMIT $1",
             )
             .bind(count as i64)
             .try_map(|r: PgRow| {
@@ -2349,7 +2354,7 @@ pub mod postgres {
 
         async fn count_files(&self) -> Result<i64> {
             let row =
-                sqlx::query::<Postgres>("SELECT COUNT(*) as count FROM Files")
+                sqlx::query::<Postgres>("SELECT COUNT(*) as count FROM files")
                     .fetch_one(&self.executor)
                     .await?;
             Ok(row.get("count"))
@@ -2372,7 +2377,7 @@ pub mod postgres {
         }
 
         async fn delete_file(&self, cid: Vec<u8>) -> Result<()> {
-            sqlx::query::<Postgres>("DELETE FROM Files WHERE Cid = $1")
+            sqlx::query::<Postgres>("DELETE FROM files WHERE cid = $1")
                 .bind(cid)
                 .execute(&self.executor)
                 .await?;

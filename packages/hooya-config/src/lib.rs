@@ -203,6 +203,7 @@ impl RuntimeConfig {
 pub struct HooyaConfig {
     pub instance: InstanceConfig,
     pub networking: NetworkingConfig,
+    pub filestore: FilestoreConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +211,13 @@ pub struct HooyaConfig {
 pub struct InstanceConfig {
     pub name: String,
     pub operator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilestoreConfig {
+    pub path: String,
+    pub db_uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +315,17 @@ impl Default for InstanceConfig {
         Self {
             name: "hooya".to_string(),
             operator: "anonymous".to_string(),
+        }
+    }
+}
+
+impl Default for FilestoreConfig {
+    fn default() -> Self {
+        let data_dir = PathBuf::from(DEFAULT_DATA_DIR.as_str());
+        let sqlite_path = data_dir.join("hooya.sqlite");
+        Self {
+            path: DEFAULT_DATA_DIR.clone(),
+            db_uri: format!("sqlite://{}", sqlite_path.to_string_lossy()),
         }
     }
 }

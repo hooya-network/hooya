@@ -229,7 +229,17 @@ impl<T: local::DatabaseBackend> Runtime<T> {
     pub async fn indexed_file(&self, cid: Vec<u8>) -> Result<File> {
         let file_row = self.db.file_row(cid.clone()).await?;
         let ext_file = if let Some(mimetype) = file_row.mimetype.clone() {
-            self.ext_file_info(cid, &mimetype).await?
+            self.ext_file_info(cid.clone(), &mimetype)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "ext_file_info failed for CID {}, mimetype {}: {:?}",
+                        crate::cid::encode(&cid),
+                        mimetype,
+                        e
+                    );
+                    e
+                })?
         } else {
             None
         };
