@@ -1,3 +1,5 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
 default:
     @just --list
 
@@ -55,3 +57,20 @@ fmt:
 # clean build artifacts
 clean:
     cargo clean
+
+pg:
+	#!/usr/bin/env bash
+	if ! docker volume inspect app-pgdata >/dev/null 2>&1; then
+		PG_PW="$(openssl rand -hex 16)"
+		POSTGRES_PASSWORD="$PG_PW" docker compose -f docker-compose.postgres.yml up -d pg
+		echo "postgres://hooya:${PG_PW}@localhost:5433/hooya?sslmode=disable"
+	else
+		POSTGRES_PASSWORD="ignored" docker compose -f docker-compose.postgres.yml up -d pg
+	fi
+
+pg-down:
+	POSTGRES_PASSWORD="ignored" docker compose -f docker-compose.postgres.yml down
+
+pg-reset:
+	POSTGRES_PASSWORD="ignored" docker compose -f docker-compose.postgres.yml down -v || true
+	docker volume rm -f app-pgdata || true

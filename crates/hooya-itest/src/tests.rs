@@ -500,39 +500,35 @@ async fn run_file_backend_test(
         serde_json::to_string_pretty(&jpeg_file_info)?
     );
 
-    if let Some(ext_file) = jpeg_file_info.get("extFile") {
-        if let Some(image_data) = ext_file.get("image") {
-            let height = image_data
-                .get("height")
-                .and_then(|h| h.as_i64())
-                .unwrap_or(0);
-            let width = image_data
-                .get("width")
-                .and_then(|w| w.as_i64())
-                .unwrap_or(0);
-            let aspect_ratio = image_data
-                .get("aspectRatio")
-                .and_then(|r| r.as_f64())
-                .unwrap_or(0.0);
+    if let Some(ext_file) = jpeg_file_info.get("ext_file") {
+        let height = ext_file
+            .get("height")
+            .and_then(|h| h.as_i64())
+            .unwrap_or(0);
+        let width = ext_file
+            .get("width")
+            .and_then(|w| w.as_i64())
+            .unwrap_or(0);
+        let aspect_ratio = ext_file
+            .get("aspect_ratio")
+            .and_then(|r| r.as_f64())
+            .unwrap_or(0.0);
 
-            info!(
-                "JPEG metadata - Height: {}, Width: {}, Aspect Ratio: {}",
+        info!(
+            "JPEG metadata - Height: {}, Width: {}, Aspect Ratio: {}",
+            height, width, aspect_ratio
+        );
+
+        if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
+            return Err(anyhow::anyhow!(
+                "Invalid JPEG metadata: height={}, width={}, aspect_ratio={}",
                 height, width, aspect_ratio
-            );
-
-            if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
-                return Err(anyhow::anyhow!(
-                    "Invalid JPEG metadata: height={}, width={}, aspect_ratio={}",
-                    height, width, aspect_ratio
-                ));
-            }
-
-            info!("✓ JPEG image processing and database storage successful!");
-        } else {
-            return Err(anyhow::anyhow!("JPEG file missing image metadata"));
+            ));
         }
+
+        info!("✓ JPEG image processing and database storage successful!");
     } else {
-        return Err(anyhow::anyhow!("JPEG file missing extFile data"));
+        return Err(anyhow::anyhow!("JPEG file missing ext_file data"));
     }
 
     let jpeg_file_tags = rest_client.get_file_tags(&jpeg_cid).await?;
@@ -754,36 +750,30 @@ async fn run_file_backend_test(
             .wait_for_file_info(&jpeg_cid1, Duration::from_secs(5))
             .await?;
 
-        if let Some(ext_file) = jpeg_info1.get("extFile") {
-            if let Some(image_data) = ext_file.get("image") {
-                let height = image_data
-                    .get("height")
-                    .and_then(|h| h.as_i64())
-                    .unwrap_or(0);
-                let width = image_data
-                    .get("width")
-                    .and_then(|w| w.as_i64())
-                    .unwrap_or(0);
-                let aspect_ratio = image_data
-                    .get("aspectRatio")
-                    .and_then(|r| r.as_f64())
-                    .unwrap_or(0.0);
+        if let Some(ext_file) = jpeg_info1.get("ext_file") {
+            let height = ext_file
+                .get("height")
+                .and_then(|h| h.as_i64())
+                .unwrap_or(0);
+            let width = ext_file
+                .get("width")
+                .and_then(|w| w.as_i64())
+                .unwrap_or(0);
+            let aspect_ratio = ext_file
+                .get("aspect_ratio")
+                .and_then(|r| r.as_f64())
+                .unwrap_or(0.0);
 
-                if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
-                    return Err(anyhow::anyhow!(
-                        "SQLite JPEG metadata invalid: height={}, width={}, aspect_ratio={}",
-                        height, width, aspect_ratio
-                    ));
-                }
-
-                info!("✓ SQLite JPEG processing successful!");
-            } else {
+            if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
                 return Err(anyhow::anyhow!(
-                    "SQLite JPEG missing image metadata"
+                    "SQLite JPEG metadata invalid: height={}, width={}, aspect_ratio={}",
+                    height, width, aspect_ratio
                 ));
             }
+
+            info!("✓ SQLite JPEG processing successful!");
         } else {
-            return Err(anyhow::anyhow!("SQLite JPEG missing extFile data"));
+            return Err(anyhow::anyhow!("SQLite JPEG missing ext_file data"));
         }
 
         let jpeg_tags1_result = rest_client1.get_file_tags(&jpeg_cid1).await?;
