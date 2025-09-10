@@ -1,0 +1,21 @@
+services:
+  pg:
+    image: postgres:16
+    container_name: app-pg
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: hooya
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set-at-runtime}
+      POSTGRES_DB: hooya
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hooya -d hooya"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - app-pgdata:/var/lib/postgresql/data
+volumes:
+  app-pgdata:
+    name: app-pgdata
+

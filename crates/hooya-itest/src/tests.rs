@@ -501,14 +501,9 @@ async fn run_file_backend_test(
     );
 
     if let Some(ext_file) = jpeg_file_info.get("ext_file") {
-        let height = ext_file
-            .get("height")
-            .and_then(|h| h.as_i64())
-            .unwrap_or(0);
-        let width = ext_file
-            .get("width")
-            .and_then(|w| w.as_i64())
-            .unwrap_or(0);
+        let height =
+            ext_file.get("height").and_then(|h| h.as_i64()).unwrap_or(0);
+        let width = ext_file.get("width").and_then(|w| w.as_i64()).unwrap_or(0);
         let aspect_ratio = ext_file
             .get("aspect_ratio")
             .and_then(|r| r.as_f64())
@@ -522,7 +517,9 @@ async fn run_file_backend_test(
         if height <= 0 || width <= 0 || aspect_ratio <= 0.0 {
             return Err(anyhow::anyhow!(
                 "Invalid JPEG metadata: height={}, width={}, aspect_ratio={}",
-                height, width, aspect_ratio
+                height,
+                width,
+                aspect_ratio
             ));
         }
 
@@ -751,14 +748,10 @@ async fn run_file_backend_test(
             .await?;
 
         if let Some(ext_file) = jpeg_info1.get("ext_file") {
-            let height = ext_file
-                .get("height")
-                .and_then(|h| h.as_i64())
-                .unwrap_or(0);
-            let width = ext_file
-                .get("width")
-                .and_then(|w| w.as_i64())
-                .unwrap_or(0);
+            let height =
+                ext_file.get("height").and_then(|h| h.as_i64()).unwrap_or(0);
+            let width =
+                ext_file.get("width").and_then(|w| w.as_i64()).unwrap_or(0);
             let aspect_ratio = ext_file
                 .get("aspect_ratio")
                 .and_then(|r| r.as_f64())

@@ -1116,7 +1116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SqlitePool::connect(db_uri).await.with_context(|| {
                     format!("Failed to connect to SQLite database at: {db_uri}")
                 })?;
-            let mut db = hooya::backends::SqliteBackend { executor: pool };
+            let mut db = hooya::db::SqliteBackend { executor: pool };
 
             // always run init_tables
             db.init_tables().await?;
@@ -1129,7 +1129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pool = PgPool::connect(db_uri).await.with_context(|| {
                 format!("Failed to connect to PostgreSQL database at: {db_uri}")
             })?;
-            let mut db = hooya::backends::PostgresBackend { executor: pool };
+            let mut db = hooya::db::PostgresBackend { executor: pool };
 
             // always run init_tables
             db.init_tables().await?;
