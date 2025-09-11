@@ -180,7 +180,6 @@ impl RuntimeConfig {
             let config: HooyaConfig = toml::from_str(&content)?;
             Ok(config)
         } else {
-            // create default config if it doesn't exist
             let default_config = HooyaConfig::default();
             self.save_hooya_config(&default_config)?;
             Ok(default_config)
@@ -216,7 +215,6 @@ pub struct InstanceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilestoreConfig {
-    pub path: String,
     pub db_uri: String,
 }
 
@@ -324,7 +322,6 @@ impl Default for FilestoreConfig {
         let data_dir = PathBuf::from(DEFAULT_DATA_DIR.as_str());
         let sqlite_path = data_dir.join("hooya.sqlite");
         Self {
-            path: DEFAULT_DATA_DIR.clone(),
             db_uri: format!("sqlite://{}", sqlite_path.to_string_lossy()),
         }
     }

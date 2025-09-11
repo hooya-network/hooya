@@ -1071,6 +1071,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .default_value("info")
                 .help("Set the log level (e.g., 'debug', 'info', 'warn')"),
         )
+        .arg(
+            Arg::new("filestore")
+                .long("filestore")
+                .env("HOOYAD_FILESTORE")
+                .help("Override the filestore path"),
+        )
         .get_matches();
 
     // initialize tracing
@@ -1087,17 +1093,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .expect("setting default subscriber failed");
 
-    let runtime_config = hooya_config::RuntimeConfig::new(PathBuf::from(
-        hooya_config::DEFAULT_DATA_DIR.as_str(),
-    ));
-
-    let hooya_config = runtime_config.load_hooya_config()?;
-
-    let filestore_path = PathBuf::from(&hooya_config.filestore.path);
-    let db_uri = &hooya_config.filestore.db_uri;
+    let filestore_path = match matches.get_one::<String>("filestore") {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from(hooya_config::DEFAULT_DATA_DIR.as_str()),
+    };
 
     let runtime_config =
         hooya_config::RuntimeConfig::new(filestore_path.clone());
+
+    let hooya_config = runtime_config.load_hooya_config()?;
+    let db_uri = &hooya_config.filestore.db_uri;
 
     runtime_config.ensure_filestore_structure()?;
 
@@ -1121,8 +1126,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // always run init_tables
             db.init_tables().await?;
 
-            run_server_with_db(db, matches, hooya_config, filestore_path)
-                .await?;
+            run_server_with_db(
+                db,
+                matches,
+                hooya_config,
+                filestore_path.clone(),
+            )
+            .await?;
         }
         hooya_config::DatabaseType::PostgreSQL => {
             use sqlx::PgPool;
@@ -1134,8 +1144,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // always run init_tables
             db.init_tables().await?;
 
-            run_server_with_db(db, matches, hooya_config, filestore_path)
-                .await?;
+            run_server_with_db(
+                db,
+                matches,
+                hooya_config,
+                filestore_path.clone(),
+            )
+            .await?;
         }
     }
 
@@ -1146,7 +1161,7 @@ async fn run_server_with_db<T: hooya::local::DatabaseBackend + 'static>(
     db: T,
     matches: clap::ArgMatches,
     hooya_config: hooya_config::HooyaConfig,
-    filestore_path: std::path::PathBuf,
+    filestore_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (instance_events, _) = tokio::sync::broadcast::channel(1000);
 

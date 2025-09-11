@@ -235,7 +235,7 @@ async fn run_file_backend_test(
     }
 
     // Prepare SSE stream up-front so we don't miss fast processing events
-    let mut sse_stream = {
+    let sse_stream = {
         let mut sse_client = SseClient::new(rest_client.base_url().to_string());
         if let Some(token) = rest_client.auth_token() {
             sse_client = sse_client.with_auth(token.to_string());
@@ -307,16 +307,10 @@ async fn run_file_backend_test(
 
     // Wait for processing to fully complete before querying
     info!("Waiting for processing to finish for CID: {}", cid);
-    let _ = sse_stream
-        .wait_for_processing_finished(&cid, Duration::from_secs(10))
-        .await?;
-
     // Step 4: Verify file information - exercises backend file_row method (and potentially image_row/video_row)
     info!("Querying file information for CID: {}", cid);
-    let file_info = match rest_client
-        .wait_for_file_info(&cid, Duration::from_secs(5))
-        .await
-    {
+    rest_client.wait_until_finished_processing(&cid).await?;
+    let file_info = match rest_client.get_file_info(&cid).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(
@@ -474,15 +468,11 @@ async fn run_file_backend_test(
         "Waiting for JPEG processing to finish for CID: {}",
         jpeg_cid
     );
-    let _ = sse_stream
-        .wait_for_processing_finished(&jpeg_cid, Duration::from_secs(15))
-        .await?;
-
     info!("Querying JPEG file information for CID: {}", jpeg_cid);
-    let jpeg_file_info = match rest_client
-        .wait_for_file_info(&jpeg_cid, Duration::from_secs(5))
-        .await
-    {
+    rest_client
+        .wait_until_finished_processing(&jpeg_cid)
+        .await?;
+    let jpeg_file_info = match rest_client.get_file_info(&jpeg_cid).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(
@@ -567,7 +557,7 @@ async fn run_file_backend_test(
         }
 
         // Prepare SSE for proxy 1 before starting upload
-        let mut sse_stream1 = {
+        let sse_stream1 = {
             let mut sse_client1 =
                 SseClient::new(rest_client1.base_url().to_string());
             if let Some(token) = rest_client1.auth_token() {
@@ -605,15 +595,9 @@ async fn run_file_backend_test(
             "Waiting for processing to finish for CID (proxy 1): {}",
             cid1
         );
-        let _ = sse_stream1
-            .wait_for_processing_finished(&cid1, Duration::from_secs(10))
-            .await?;
-
         // Verify file info
-        let file_info1 = match rest_client1
-            .wait_for_file_info(&cid1, Duration::from_secs(5))
-            .await
-        {
+        rest_client1.wait_until_finished_processing(&cid1).await?;
+        let file_info1 = match rest_client1.get_file_info(&cid1).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!(
@@ -739,13 +723,10 @@ async fn run_file_backend_test(
         let jpeg_cid1 = jpeg_complete1.cid;
 
         info!("Waiting for JPEG processing (SQLite): {}", jpeg_cid1);
-        let _ = sse_stream1
-            .wait_for_processing_finished(&jpeg_cid1, Duration::from_secs(15))
+        rest_client1
+            .wait_until_finished_processing(&jpeg_cid1)
             .await?;
-
-        let jpeg_info1 = rest_client1
-            .wait_for_file_info(&jpeg_cid1, Duration::from_secs(5))
-            .await?;
+        let jpeg_info1 = rest_client1.get_file_info(&jpeg_cid1).await?;
 
         if let Some(ext_file) = jpeg_info1.get("ext_file") {
             let height =
@@ -877,6 +858,98 @@ async fn run_extended_backend_test(
     info!("Verified additional backend methods: count_files, count_tags, count_tag_associations, get_descriptors_that_start_with");
 
     Ok(())
+}
+
+async fn run_search_test(
+    cluster: &DeployedCluster,
+    _config: &TestConfig,
+) -> Result<()> {
+    info!("starting search functionality test");
+
+    let proxy_url = format!("http://localhost:{}", 8532);
+    let mut rest_client = RestClient::new(proxy_url);
+
+    info!("waiting for proxy to become healthy");
+    rest_client
+        .wait_for_health(Duration::from_secs(60))
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("proxy failed to become healthy: {}", e)
+        })?;
+
+    if let Some(password) = cluster.proxy_password(0) {
+        info!("authenticating with proxy");
+        rest_client.login(password).await?;
+    } else {
+        return Err(anyhow::anyhow!("no password found for proxy 0"));
+    }
+
+    let jpeg_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test-vectors")
+        .join(
+            "bafkreihj7edy35b227jzxyw2ixdkb326eysyrm65q6i4ht46kynzb2s42u.jpeg",
+        );
+    let jpeg_content = std::fs::read(&jpeg_path)?;
+    let search_tags = vec![
+        FileTag {
+            namespace: "category".to_string(),
+            descriptor: "searchtest".to_string(),
+        },
+        FileTag {
+            namespace: "source".to_string(),
+            descriptor: "search-vector".to_string(),
+        },
+    ];
+
+    let upload_response = rest_client
+        .start_upload(
+            Some(jpeg_content.len() as u64),
+            Some("image/jpeg".to_string()),
+        )
+        .await?;
+    let _chunk_response = rest_client
+        .upload_chunk(&upload_response.upload_id, 0, jpeg_content)
+        .await?;
+    let complete_response = rest_client
+        .complete_upload(&upload_response.upload_id, search_tags.clone())
+        .await?;
+    let cid = complete_response.cid;
+
+    info!("waiting for processing to complete for cid: {}", cid);
+    rest_client.wait_until_finished_processing(&cid).await?;
+
+    let search_results =
+        rest_client.search_files("category:searchtest", 1).await?;
+
+    let files = search_results["files"]
+        .as_array()
+        .expect("files should be array");
+    let found = files.iter().any(|f| f["cid"].as_str() == Some(&cid));
+
+    if !found {
+        return Err(anyhow::anyhow!(
+            "uploaded file not found in search results"
+        ));
+    }
+
+    info!("✓ search functionality verified");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_search_functionality() {
+    init_tracing();
+    let config = TestConfig::default();
+
+    let cluster = get_shared_test_cluster().await;
+
+    let result = run_search_test(&cluster, &config).await;
+
+    if let Err(e) = &result {
+        tracing::error!("search test failed: {:?}", e);
+    }
+
+    assert!(result.is_ok(), "search test failed: {result:?}");
 }
 
 #[cfg(test)]

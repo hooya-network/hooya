@@ -439,12 +439,23 @@ async fn create_hooyad_config(
     namespace: &str,
     node: &NodeConfig,
 ) -> Result<()> {
+    let filestore_section = if let Some(db_uri) = &node.db_uri {
+        format!(
+            r#"[filestore]
+db_uri = "{db_uri}"
+
+"#
+        )
+    } else {
+        String::new()
+    };
+
     let config_content = format!(
         r#"[instance]
 name = "{}"
 operator = "{}"
 
-[networking]
+{}[networking]
 max_peers = 50
 max_message_size_bytes = 1048576
 listen_addresses = [
@@ -469,7 +480,7 @@ discovery_interval_secs = 30
 enabled = false
 bootstrap_domain = "bootstrap.hooya.org"
 "#,
-        node.instance_name, node.operator
+        node.instance_name, node.operator, filestore_section
     );
 
     let mut data = BTreeMap::new();
@@ -580,7 +591,7 @@ async fn create_hooyad_deployment(
                             },
                         ]),
                         env: Some({
-                            let mut env_vars = vec![
+                            let env_vars = vec![
                                 k8s_openapi::api::core::v1::EnvVar {
                                     name: "HOOYAD_ENDPOINT".to_string(),
                                     value: Some("0.0.0.0:8531".to_string()),
@@ -598,13 +609,6 @@ async fn create_hooyad_deployment(
                                 },
                             ];
 
-                            if let Some(db_uri) = &node.db_uri {
-                                env_vars.push(k8s_openapi::api::core::v1::EnvVar {
-                                    name: "HOOYAD_DB_URI".to_string(),
-                                    value: Some(db_uri.clone()),
-                                    ..Default::default()
-                                });
-                            }
 
                             env_vars
                         }),

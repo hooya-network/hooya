@@ -44,7 +44,7 @@ pg:
 	if ! docker volume inspect app-pgdata >/dev/null 2>&1; then
 		PG_PW="$(openssl rand -hex 16)"
 		POSTGRES_PASSWORD="$PG_PW" docker compose -f docker-compose.postgres.yml up -d pg
-		echo "postgres://hooya:${PG_PW}@localhost:5433/hooya?sslmode=disable"
+		echo "postgres://hooya:${PG_PW}@localhost:5432/hooya?sslmode=disable"
 	else
 		POSTGRES_PASSWORD=whatever docker compose -f docker-compose.postgres.yml up -d pg
 	fi

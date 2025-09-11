@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use std::time::Instant;
 use tracing::{debug, info};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -397,28 +395,6 @@ impl RestClient {
             .context("Failed to parse file info response")
     }
 
-    /// Wait for file info to become available, polling until timeout
-    pub async fn wait_for_file_info(
-        &self,
-        cid: &str,
-        timeout: Duration,
-    ) -> Result<serde_json::Value> {
-        let start = Instant::now();
-        let mut last_err: Option<anyhow::Error> = None;
-        loop {
-            match self.get_file_info(cid).await {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    last_err = Some(e);
-                    if start.elapsed() >= timeout {
-                        return Err(last_err.unwrap());
-                    }
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                }
-            }
-        }
-    }
-
     /// Get file tags by CID - exercises backend file_tags method
     pub async fn get_file_tags(&self, cid: &str) -> Result<Vec<FileTag>> {
         let url = format!("{}/cid-tags/{}", self.base_url, cid);
@@ -468,6 +444,93 @@ impl RestClient {
             .json()
             .await
             .context("Failed to parse files list response")
+    }
+
+    pub async fn search_files(
+        &self,
+        query: &str,
+        page_token: u32,
+    ) -> Result<serde_json::Value> {
+        let url =
+            format!("{}/search-files/{}/{}", self.base_url, query, page_token);
+        let mut req = self.client.get(&url);
+        if let Some(token) = &self.auth_token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let response = req.send().await.context("Failed to search files")?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Search files failed with status: {} - {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            ));
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse search results response")
+    }
+
+    pub async fn wait_until_finished_processing(
+        &self,
+        cid: &str,
+    ) -> Result<()> {
+        // check if already processed
+        if let Ok(file_info) = self.get_file_info(cid).await {
+            if let Some(status) =
+                file_info.get("processing_status").and_then(|s| s.as_u64())
+            {
+                if status == 0 {
+                    tracing::debug!(
+                        "file {} already processed, skipping sse wait",
+                        cid
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        tracing::debug!(
+            "starting sse wait for processing completion of {}",
+            cid
+        );
+        let mut sse_client = crate::sse::SseClient::new(self.base_url.clone());
+        if let Some(token) = &self.auth_token {
+            sse_client = sse_client.with_auth(token.clone());
+        }
+        let mut sse_stream = sse_client.connect_instance_events().await?;
+        sse_stream
+            .wait_for_event(
+                |event| {
+                    let matches = match event {
+                        crate::sse::InstanceEvent::ProcessingFinished(pe)
+                            if pe.cid == cid =>
+                        {
+                            tracing::debug!(
+                                "received ProcessingFinished for {}",
+                                cid
+                            );
+                            true
+                        }
+                        crate::sse::InstanceEvent::ProcessingFailed(pe)
+                            if pe.cid == cid =>
+                        {
+                            tracing::warn!(
+                                "received ProcessingFailed for {}",
+                                cid
+                            );
+                            true
+                        }
+                        _ => false,
+                    };
+                    matches
+                },
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+        Ok(())
     }
 }
 

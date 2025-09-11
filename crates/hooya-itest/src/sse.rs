@@ -303,40 +303,6 @@ impl SseEventStream {
             })
             .collect()
     }
-
-    /// Wait until a specific CID finishes processing (or fails)
-    /// Returns the ProcessingEvent on success, or an error if it fails or times out
-    pub async fn wait_for_processing_finished(
-        &mut self,
-        target_cid: &str,
-        timeout: Duration,
-    ) -> Result<ProcessingEvent> {
-        let cid = target_cid.to_string();
-        let event = self
-            .wait_for_event(
-                |event| match event {
-                    InstanceEvent::ProcessingFinished(pe) if pe.cid == cid => {
-                        true
-                    }
-                    InstanceEvent::ProcessingFailed(pe) if pe.cid == cid => {
-                        true
-                    }
-                    _ => false,
-                },
-                timeout,
-            )
-            .await?;
-
-        match event {
-            InstanceEvent::ProcessingFinished(pe) => Ok(pe),
-            InstanceEvent::ProcessingFailed(pe) => Err(anyhow::anyhow!(
-                "Processing failed for CID {} (mimetype={:?})",
-                pe.cid,
-                pe.mimetype
-            )),
-            _ => unreachable!(),
-        }
-    }
 }
 
 fn parse_sse_event(event: eventsource_stream::Event) -> Result<InstanceEvent> {

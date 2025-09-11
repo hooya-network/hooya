@@ -559,7 +559,7 @@ impl DatabaseBackend for PostgresBackend {
                 INNER JOIN TagMap tm ON f.cid = tm.filecid
                 INNER JOIN Tags t ON t.id = tm.tagid
                 WHERE {where_clause}
-                GROUP BY f.cid, i.Height, i.Width, i.Ratio, i.Colors, i.PrimaryColor, v.Height, v.Width, v.Ratio, v.Duration
+                GROUP BY f.cid, f.size, f.mimetype, f.indexed, i.height, i.width, i.ratio, i.colors, i.primarycolor, v.height, v.width, v.ratio, v.duration
                 HAVING COUNT(DISTINCT t.id) = {distinct_tag_count}
                 {order_clause}
                 LIMIT ${} OFFSET ${}

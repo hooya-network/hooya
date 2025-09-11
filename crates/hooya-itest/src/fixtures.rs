@@ -45,6 +45,14 @@ pub async fn get_shared_test_cluster() -> Arc<DeployedCluster> {
                     first.name
                 );
             }
+            // configure remaining nodes to use sqlite in the mounted /data directory
+            for (i, node) in topology.nodes.iter_mut().enumerate().skip(1) {
+                node.db_uri = Some("sqlite:///data/hooya.sqlite".to_string());
+                info!(
+                    "Configured node '{}' to use SQLite backend at /data",
+                    node.name
+                );
+            }
 
             info!(
                 "Deploying test topology: {} nodes, {} proxies",
