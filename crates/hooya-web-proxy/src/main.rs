@@ -600,8 +600,11 @@ async fn tag_cid(
         .await
     {
         Ok(_) => StatusCode::CREATED.into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to tag CID")
-            .into_response(),
+        Err(e) => {
+            eprintln!("Failed to tag CID: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to tag CID")
+                .into_response()
+        }
     }
 }
 
