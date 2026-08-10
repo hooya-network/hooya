@@ -173,11 +173,12 @@ impl DatabaseBackend for PostgresBackend {
         for t in tag_maps {
             sqlx::query::<Postgres>(
                 r#"
-                INSERT INTO tagmap (filecid, tagid, reason) VALUES
-                ($1, $2, $3) ON CONFLICT DO NOTHING"#,
+                INSERT INTO tagmap (filecid, tagid, added, reason) VALUES
+                ($1, $2, $3, $4) ON CONFLICT DO NOTHING"#,
             )
             .bind(t.file_cid.clone())
             .bind(t.tag_id)
+            .bind(t.added.clone())
             .bind(t.reason as i32)
             .execute(&mut *tx)
             .await?;
@@ -274,8 +275,8 @@ impl DatabaseBackend for PostgresBackend {
                 Ratio=EXCLUDED.Ratio, Duration=EXCLUDED.Duration"#,
         )
         .bind(video.cid)
-        .bind(video.height as i32)
-        .bind(video.width as i32)
+        .bind(video.height as i64)
+        .bind(video.width as i64)
         .bind(video.ratio)
         .bind(video.duration)
         .execute(&self.executor)
@@ -379,8 +380,8 @@ impl DatabaseBackend for PostgresBackend {
                 .bind(cid)
                 .try_map(|r: PgRow| {
                     let cid = r.try_get("cid")?;
-                    let height = r.try_get::<i32, _>("height")? as u32;
-                    let width = r.try_get::<i32, _>("width")? as u32;
+                    let height = r.try_get::<i64, _>("height")? as u32;
+                    let width = r.try_get::<i64, _>("width")? as u32;
                     let ratio = r.try_get("ratio")?;
                     let duration = r.try_get("duration")?;
 
