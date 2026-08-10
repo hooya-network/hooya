@@ -174,7 +174,8 @@ impl DatabaseBackend for PostgresBackend {
             sqlx::query::<Postgres>(
                 r#"
                 INSERT INTO tagmap (filecid, tagid, added, reason) VALUES
-                ($1, $2, $3, $4) ON CONFLICT DO NOTHING"#,
+                ($1, $2, COALESCE($3::timestamptz, CURRENT_TIMESTAMP), $4)
+                ON CONFLICT DO NOTHING"#,
             )
             .bind(t.file_cid.clone())
             .bind(t.tag_id)
@@ -682,66 +683,45 @@ impl DatabaseBackend for PostgresBackend {
                 })
                 .collect();
 
-            let ext_file = if let Ok(height) =
-                raw_file.try_get::<Option<i64>, _>("ImageHeight").map_err(|e| {
-                    tracing::error!("files_page failed to read ImageHeight for CID {}: {:?}", 
-                        crate::cid::encode(&cid), e);
-                    e
-                })
+            // NULL height on the outer join means the row isn't that kind of
+            // media; a decode error is a real failure and propagates
+            let ext_file = if let Some(height) =
+                raw_file.try_get::<Option<i64>, _>("ImageHeight")?
             {
-                if let Some(height) = height {
-                    let colors_data: Option<Vec<u8>> =
-                        raw_file.try_get("ImageColors")?;
-                    let colors = colors_data
-                        .unwrap_or_default()
-                        .chunks(3)
-                        .map(|c| c.into())
-                        .collect();
-                    Some(crate::proto::file::ExtFile::Image(
-                        crate::proto::Image {
-                            height,
-                            width: raw_file
-                                .try_get::<Option<i64>, _>("ImageWidth")?
-                                .unwrap_or(0),
-                            aspect_ratio: raw_file
-                                .try_get::<Option<f64>, _>("ImageRatio")?
-                                .unwrap_or(0.0)
-                                as f32,
-                            colors,
-                            thumbnails,
-                        },
-                    ))
-                } else {
-                    None
-                }
-            } else if let Ok(height) =
-                raw_file.try_get::<Option<i64>, _>("VideoHeight").map_err(|e| {
-                    tracing::error!("files_page failed to read VideoHeight for CID {}: {:?}", 
-                        crate::cid::encode(&cid), e);
-                    e
-                })
+                let colors_data: Option<Vec<u8>> =
+                    raw_file.try_get("ImageColors")?;
+                let colors = colors_data
+                    .unwrap_or_default()
+                    .chunks(3)
+                    .map(|c| c.into())
+                    .collect();
+                Some(crate::proto::file::ExtFile::Image(crate::proto::Image {
+                    height,
+                    width: raw_file
+                        .try_get::<Option<i64>, _>("ImageWidth")?
+                        .unwrap_or(0),
+                    aspect_ratio: raw_file
+                        .try_get::<Option<f64>, _>("ImageRatio")?
+                        .unwrap_or(0.0) as f32,
+                    colors,
+                    thumbnails,
+                }))
+            } else if let Some(height) =
+                raw_file.try_get::<Option<i64>, _>("VideoHeight")?
             {
-                if let Some(height) = height {
-                    Some(crate::proto::file::ExtFile::Video(
-                        crate::proto::Video {
-                            height,
-                            width: raw_file
-                                .try_get::<Option<i64>, _>("VideoWidth")?
-                                .unwrap_or(0),
-                            aspect_ratio: raw_file
-                                .try_get::<Option<f64>, _>("VideoRatio")?
-                                .unwrap_or(0.0)
-                                as f32,
-                            thumbnails,
-                            duration: raw_file
-                                .try_get::<Option<f64>, _>("VideoDuration")?
-                                .unwrap_or(0.0)
-                                as f32,
-                        },
-                    ))
-                } else {
-                    None
-                }
+                Some(crate::proto::file::ExtFile::Video(crate::proto::Video {
+                    height,
+                    width: raw_file
+                        .try_get::<Option<i64>, _>("VideoWidth")?
+                        .unwrap_or(0),
+                    aspect_ratio: raw_file
+                        .try_get::<Option<f64>, _>("VideoRatio")?
+                        .unwrap_or(0.0) as f32,
+                    thumbnails,
+                    duration: raw_file
+                        .try_get::<Option<f64>, _>("VideoDuration")?
+                        .unwrap_or(0.0) as f32,
+                }))
             } else {
                 None
             };
